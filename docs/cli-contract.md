@@ -36,9 +36,10 @@ and columns. Use `tview --version` to print the package version.
 ## Text tables
 
 Table output uses fixed-width text. It includes every configured row and visible
-column without limiting the total width to the terminal. Downstream tools handle
-wrapping, paging, or truncation. Batch output never enters raw mode or the
-alternate screen.
+column without limiting the total table width to the terminal. `--width <number>`
+and saved fixed widths can clip individual cell contents; otherwise downstream
+tools handle wrapping, paging, or truncation. Batch output never enters raw mode
+or the alternate screen.
 
 `--color auto` and `--color never` write plain text. `--color always` adds ANSI
 styling from the active theme. Table output does not preserve CSV or JSON

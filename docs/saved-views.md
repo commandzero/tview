@@ -11,7 +11,7 @@ Tview loads YAML views from `$XDG_CONFIG_HOME/tview/views`, or
 `~/.config/tview/views` when `XDG_CONFIG_HOME` is unset. Tview uses this path on
 every platform, including macOS. Files ending in `.yml` and `.yaml` are
 accepted. If both `name.yml` and `name.yaml` exist, `.yml` wins and a footer
-warning is shown.
+warning is shown in interactive mode; batch mode writes the warning to stderr.
 
 Views match the input basename. Remote endpoints use a name such as
 `https_elastic.example_9200` to distinguish hosts without storing credentials,
