@@ -1,7 +1,6 @@
 # Elasticsearch integration fixture
 
-The fixture pins Elasticsearch 9.1.0 to the client compatibility line used by
-the optional adapter. It creates a visible index, a hidden index, a data stream,
+The fixture runs Elasticsearch 9.1.0 for the optional adapter's integration tests. It creates a visible index, a hidden index, a data stream,
 multivalued data, runtime and multifield mappings, and a cross-index mapping
 conflict.
 

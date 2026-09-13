@@ -2,16 +2,15 @@
 type: Guide
 title: Migration from Tabview
 description: Upgrade steps for the Rust binary and renamed configuration.
-generated: { by: codex/gpt-6, at: 2026-09-07T05:49:24Z }
+generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
 ---
 
 # Migration from Tabview
 
 Tview is an independent Rust rewrite of Tabview. The first planned Tview release
-is `0.1.0`, starting an independent version sequence under the new name.
-Historical Tabview tags and MIT attribution remain intact.
-Crates.io is the primary distribution channel. GitHub archives provide native
-binaries alongside the crate.
+is `0.1.0`, with its own version sequence. Historical Tabview tags and MIT
+attribution remain intact. Crates.io is the primary distribution channel. GitHub
+archives provide native binaries alongside the crate.
 
 1. Install the published crate using `cargo install tview`.
 2. Replace calls to the Python `tabview` command with `tview`.
@@ -26,8 +25,6 @@ binaries alongside the crate.
 6. Review pipelines. Redirected stdout defaults to table text; use explicit JSON
    or JSONL for a documented machine format. Never redirect over the source file.
 
-Release archives use `tview-v<version>-<rust-target-triple>.tar.gz` with a versionless
-`tview` executable. Do not rename historical upstream tags or replace published
-bytes. Publish the crate and GitHub archives from the same reviewed version. Before
-adding Homebrew distribution, update producer and consumer URLs together and
-test installation on supported hosts. See [releases](releases.md).
+See the [release process](releases.md) for archive names, supported platforms,
+and publication checks. Historical Tabview tags and published files stay
+unchanged.
