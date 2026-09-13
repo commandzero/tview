@@ -13,7 +13,7 @@ Prepare a reviewed PR that updates Cargo.toml, Cargo.lock, a dated changelog
 section, migration notes, and compatibility and support changes together. Use
 the package version in Cargo.toml as the release version. Use `v<version>` tags,
 including prerelease suffixes. Set the release date in the proposal. Do not
-publish an Unreleased section.
+publish from the `Unreleased` section.
 
 After merge, create the accepted tag on that reviewed main-branch commit.
 Dispatch [release.yml](../.github/workflows/release.yml) with that tag. The
