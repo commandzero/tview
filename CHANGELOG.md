@@ -35,6 +35,8 @@
 
 ### Added
 
+- Added `--sorted true|false` to control saved-view sorting in direct table output.
+- Added `-n` and `--top-lines` for fast table previews with a remaining-row summary.
 - Added explicit JSON and JSONL export of displayed cells and `--version`.
 - Added Rust test coverage for CLI compatibility, data ingestion, table
   operations, rendering snapshots, and accepted behavior changes.

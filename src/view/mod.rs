@@ -278,6 +278,7 @@ impl Viewport {
 
 #[derive(Debug, Clone)]
 pub struct TableView {
+    preview_preparing: bool,
     table_definition: Option<TableDefinition>,
     source_store: Option<InMemoryTable>,
     incremental_store: Option<SharedTableStore>,
@@ -389,6 +390,7 @@ impl TableView {
         let visible_rows = (0..rows.len()).collect();
 
         Self {
+            preview_preparing: false,
             table_definition: None,
             source_store: None,
             incremental_store: None,
@@ -493,6 +495,7 @@ impl TableView {
         let columns = Columns::infer(header.as_deref(), &rows);
         let visible_rows = (0..rows.len()).collect();
         Ok(Self {
+            preview_preparing: false,
             table_definition: Some(opened.definition),
             source_store: None,
             incremental_store: Some(SharedTableStore(Rc::new(RefCell::new(opened.store)))),
@@ -1824,6 +1827,9 @@ impl TableView {
     }
 
     fn apply_query_configuration(&mut self) -> bool {
+        if self.preview_preparing {
+            return true;
+        }
         match self.refresh_view_transform() {
             QueryRefresh::Applied => return true,
             QueryRefresh::Failed => {
@@ -2393,6 +2399,121 @@ impl TableView {
     /// Finish indexing/query execution and load the complete logical result
     /// without consulting the viewport. This is the preparation boundary used
     /// by output adapters and by post-interactive serialization.
+    pub(crate) fn defer_preview_preparation(&mut self) {
+        self.preview_preparing = true;
+    }
+
+    pub(crate) fn prepare_preview(
+        &mut self,
+        limit: usize,
+        colored: bool,
+        full_schema: bool,
+    ) -> anyhow::Result<Option<crate::table::RowCount>> {
+        let has_sort = !self.sort_keys.is_empty();
+        #[cfg(feature = "saved-views")]
+        let has_sort = has_sort || !self.pending_saved_sorts.is_empty();
+        let remaining;
+        if has_sort {
+            // Discover the full sorting schema before a query store consumes its deltas.
+            if let Some(shared) = self.incremental_store.clone() {
+                let progress = shared
+                    .0
+                    .borrow_mut()
+                    .ensure_indexed_through(RowIndex(usize::MAX))?;
+                self.apply_source_schema_delta(progress.schema_delta)?;
+            }
+            self.preview_preparing = false;
+            self.apply_query_configuration();
+            self.complete_for_output()?;
+            let total = self.rows.len();
+            self.rows.truncate(limit);
+            self.row_ids.truncate(limit);
+            remaining = (total > limit)
+                .then_some(crate::table::RowCount::Exact(total.saturating_sub(limit)));
+        } else {
+            let shared = self
+                .incremental_store
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
+            let mut selected = Vec::new();
+            let mut ids = Vec::new();
+            let mut index = 0;
+            let mut more = false;
+            let mut prefix_state = None;
+            loop {
+                // Retain the emitted schema while lookahead checks later matching rows.
+                if selected.len() == limit && prefix_state.is_none() {
+                    prefix_state = Some(self.clone());
+                }
+                let progress = shared
+                    .0
+                    .borrow_mut()
+                    .ensure_indexed_through(RowIndex(index))?;
+                self.apply_source_schema_delta(progress.schema_delta)?;
+                let Some(row) = shared.0.borrow_mut().row(RowIndex(index))? else {
+                    break;
+                };
+                index += 1;
+                let cells = row.display_cells();
+                if self.row_passes_filters(&cells) {
+                    if selected.len() == limit {
+                        more = true;
+                        break;
+                    }
+                    ids.push(row.id);
+                    selected.push(cells);
+                }
+            }
+            let count = shared.0.borrow().row_count();
+            remaining = if more {
+                match count {
+                    crate::table::RowCount::Exact(total) if self.filters.is_empty() => {
+                        Some(crate::table::RowCount::Exact(total.saturating_sub(limit)))
+                    }
+                    _ => Some(crate::table::RowCount::Unknown),
+                }
+            } else {
+                None
+            };
+            if let Some(prefix) = prefix_state {
+                *self = prefix;
+            }
+            self.rows = selected;
+            self.row_ids = ids;
+        }
+        if !full_schema && !self.row_ids.is_empty() {
+            if let Some(shared) = &self.incremental_store {
+                let present = self
+                    .row_ids
+                    .iter()
+                    .map(|id| shared.0.borrow().present_columns(*id))
+                    .collect::<Option<Vec<_>>>();
+                if let Some(present) = present {
+                    let present = present.into_iter().flatten().collect::<BTreeSet<_>>();
+                    self.hidden_columns.extend(
+                        (0..self.source_column_count()).filter(|column| !present.contains(column)),
+                    );
+                }
+            }
+        }
+        let columns = self.source_column_count();
+        for row in &mut self.rows {
+            row.resize(columns, String::new());
+        }
+        // The output projection must no longer pull rows or profile the source.
+        self.incremental_store = None;
+        self.source_store = None;
+        self.query_store = None;
+        self.active_view_transform = None;
+        self.preview_preparing = false;
+        self.visible_rows = (0..self.rows.len()).collect();
+        self.columns = Columns::infer(self.header.as_deref(), &self.rows);
+        if colored {
+            self.rebuild_column_color_metadata();
+        }
+        Ok(remaining)
+    }
+
     pub fn complete_for_output(&mut self) -> anyhow::Result<()> {
         if let Some(shared) = self.incremental_store.clone() {
             let progress = shared
@@ -3119,6 +3240,7 @@ impl TableView {
                 )
             });
         if kind == FilterKind::Numeric
+            && !self.preview_preparing
             && !typed_numeric
             && !self.columns.is_numeric(ColumnIndex::new(source_column))
         {
@@ -3552,6 +3674,27 @@ impl TableView {
     }
 
     fn row_passes_filters(&self, row: &[String]) -> bool {
+        #[cfg(feature = "saved-views")]
+        if self.preview_preparing
+            && !self.pending_saved_filters.iter().all(|filter| {
+                let mode = match filter.action {
+                    crate::saved_views::FilterAction::In => FilterMode::In,
+                    crate::saved_views::FilterAction::Out => FilterMode::Out,
+                };
+                let kind = match filter.kind {
+                    crate::saved_views::FilterKind::Text => FilterKind::Text,
+                    crate::saved_views::FilterKind::Regex => FilterKind::Regex,
+                    crate::saved_views::FilterKind::Numeric => FilterKind::Numeric,
+                };
+                let profile = crate::ops::sort::NumericColumnProfile::default();
+                FilterCondition::parse(kind, &filter.condition, profile).is_ok_and(|condition| {
+                    ActiveFilter::new(usize::MAX, mode, kind, filter.condition.clone(), condition)
+                        .accepts_values("", "", profile)
+                })
+            })
+        {
+            return false;
+        }
         self.filters.iter().all(|filter| {
             let raw = row
                 .get(filter.column)
@@ -3657,6 +3800,9 @@ impl TableView {
     }
 
     fn rebuild_column_color_metadata(&mut self) {
+        if self.preview_preparing {
+            return;
+        }
         let exact_profiles = self.exact_reduction_profiles().ok().flatten();
         self.column_color_metadata = (0..self.source_column_count())
             .map(|source_column| {
@@ -3677,6 +3823,9 @@ impl TableView {
     }
 
     fn rebuild_column_color_metadata_for(&mut self, source_column: usize) {
+        if self.preview_preparing {
+            return;
+        }
         let exact_profile = self
             .exact_reduction_profiles()
             .ok()
@@ -3766,6 +3915,9 @@ impl TableView {
     fn exact_reduction_profiles(
         &mut self,
     ) -> anyhow::Result<Option<Vec<crate::table::ColumnReductionProfile>>> {
+        if self.preview_preparing {
+            return Ok(None);
+        }
         let shared = if self.view_transform_is_active() {
             self.query_store.clone()
         } else {

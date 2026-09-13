@@ -2,7 +2,7 @@
 type: Guide
 title: CLI output and compatibility
 description: Output schemas, exit codes, stream behavior, and compatibility rules.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: codex/gpt-6, at: 2026-09-13T19:15:03Z }
 ---
 
 # CLI output and compatibility
@@ -43,6 +43,45 @@ alternate screen.
 `--color auto` and `--color never` write plain text. `--color always` adds ANSI
 styling from the active theme. Table output does not preserve CSV or JSON
 syntax.
+
+## Fast table previews
+
+Use a row limit and skip saved-view sorting for a file-manager preview:
+
+```sh
+tview --output table --sorted false --top-lines 30 data.csv
+```
+
+`-n 30` is the short form of `--top-lines 30`. The limit counts data rows after
+source and view filters. The header and remaining-row summary are extra lines.
+Omitting the limit keeps full output. The count must be a positive integer.
+
+`--sorted true|false` defaults to `true`. Setting it to `false` skips saved
+`view.sort` while keeping filters, formatting, column settings, and source
+ordering. It does not remove sorting from a saved source query, SQL, or ES|QL.
+These options apply only to direct table output, including automatic table
+output when stdout is redirected. Tview rejects explicit use with interactive
+mode, interactive export, JSON, or JSONL.
+
+A truncated preview ends with `95 more rows...` when the exact number of omitted
+filtered rows is already known. Otherwise it ends with `more rows...`. Tview
+looks for one additional matching row but does not scan the rest just to count
+it. The summary excludes rows outside the source-query limit.
+
+Preview widths, inferred types, columns, and automatic color gradients use the
+selected rows. Wider values and new fields in omitted rows do not change the
+preview. Explicit widths and fixed color rules still apply. A requested full
+schema scan still runs; use `--schema-scan default` to override one in a saved
+view.
+
+Saved sorting can require reading the full result. Selective filters can also
+require a long scan to find enough matches. SQLite and Elasticsearch keep their
+native query limits and may fetch a bounded response before rendering.
+
+Stdin previews exit once enough rows and lookahead are available, even if the
+producer has not closed its pipe. The producer may receive a broken pipe.
+Previews do not validate unread trailing content. Errors encountered while
+preparing the selected rows or lookahead leave stdout empty.
 
 ## JSON and JSONL
 
@@ -92,8 +131,9 @@ flush count as success. Other write failures return 1 and may leave partial
 bytes. A failure during source preparation produces no output. A process killed
 during serialization can leave truncated JSON or JSONL; writes are not atomic.
 
-All serializers wait for complete source preparation and late schema discovery
-before writing. Stdin waits for EOF and can materialize the entire input. Some
+Complete exports wait for source preparation and late schema discovery before
+writing. Table previews use the bounded preparation described above. Complete
+exports from stdin wait for EOF and can materialize the entire input. Some
 sorts, filters, and exports can require full materialization even when initial
 viewing was incremental. JSONL framing does not make ingestion bounded-memory.
 Remote source limits and timeouts remain enforced.

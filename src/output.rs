@@ -95,7 +95,9 @@ pub trait OutputAdapter {
 }
 
 #[derive(Debug, Default)]
-pub struct FixedWidthTableAdapter;
+pub struct FixedWidthTableAdapter {
+    trim_trailing: bool,
+}
 
 impl OutputAdapter for FixedWidthTableAdapter {
     fn requirements(&self) -> OutputRequirements {
@@ -136,11 +138,20 @@ impl OutputAdapter for FixedWidthTableAdapter {
                 &widths,
                 &gap,
                 color,
+                self.trim_trailing,
             )?;
         }
         for row_index in 0..prepared.rows.len() {
             let row = normalize_row(prepared.rows.row(row_index));
-            write_line(writer, &row, &prepared.columns, &widths, &gap, color)?;
+            write_line(
+                writer,
+                &row,
+                &prepared.columns,
+                &widths,
+                &gap,
+                color,
+                self.trim_trailing,
+            )?;
         }
         Ok(())
     }
@@ -261,6 +272,37 @@ pub fn write_view_to_stdout(
     flush_output(&mut writer)
 }
 
+pub(crate) fn write_preview_to_stdout(
+    color: ColorOutput,
+    view: &mut TableView,
+    theme: &ResolvedTheme,
+    remaining: Option<crate::table::RowCount>,
+) -> anyhow::Result<()> {
+    let stdout = io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+    let requirements = OutputRequirements {
+        conditional_styles: color == ColorOutput::Always,
+        ..OutputRequirements::default()
+    };
+    let prepared = prepare(view, theme, requirements)?;
+    let result = (|| -> io::Result<()> {
+        FixedWidthTableAdapter {
+            trim_trailing: true,
+        }
+        .write(&prepared, color, &mut writer)?;
+        match remaining {
+            Some(crate::table::RowCount::Exact(count)) => writeln!(writer, "{count} more rows..."),
+            Some(_) => writeln!(writer, "more rows..."),
+            None => Ok(()),
+        }
+    })();
+    match result {
+        Ok(()) => flush_output(&mut writer),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn flush_output(writer: &mut dyn Write) -> anyhow::Result<()> {
     match writer.flush() {
         Ok(()) => Ok(()),
@@ -375,8 +417,17 @@ fn write_line(
     widths: &[usize],
     gap: &[u8],
     color: ColorOutput,
+    trim_trailing: bool,
 ) -> io::Result<()> {
-    let count = columns.len().min(widths.len());
+    let count = if trim_trailing {
+        cells
+            .iter()
+            .take(columns.len().min(widths.len()))
+            .rposition(|cell| !cell.text.trim_end_matches(' ').is_empty())
+            .map_or(0, |last| last + 1)
+    } else {
+        columns.len().min(widths.len())
+    };
     for index in 0..count {
         if index > 0 {
             writer.write_all(gap)?;
@@ -387,6 +438,11 @@ fn write_line(
             .unwrap_or(("", Style::default()));
         let is_last = index + 1 == count;
         let text = align_cell(cell, widths[index], columns[index].alignment, is_last);
+        let text = if is_last && trim_trailing {
+            text.trim_end_matches(' ')
+        } else {
+            &text
+        };
         if color == ColorOutput::Always {
             let ansi = ansi_start(style);
             if !ansi.is_empty() {

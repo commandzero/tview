@@ -670,3 +670,354 @@ view:
         "{stderr}"
     );
 }
+
+#[test]
+fn preview_options_reject_non_table_modes_before_input() {
+    for mode in [
+        vec!["--output", "json"],
+        vec!["--output", "jsonl"],
+        vec!["--interactive"],
+        vec!["--interactive", "--output", "table"],
+    ] {
+        for option in [vec!["--sorted", "true"], vec!["-n", "2"]] {
+            tview_command()
+                .args(&mode)
+                .args(&option)
+                .arg("/does/not/exist")
+                .assert()
+                .code(1)
+                .stdout("")
+                .stderr(predicate::str::contains("require direct table output"));
+        }
+    }
+}
+
+#[test]
+fn previews_stop_before_unread_suffix_and_freeze_layout() {
+    for (suffix, contents, expected) in [
+        (
+            ".csv",
+            "A,B\n1,x\n2,y\n3,very-long-value\n4,z\n",
+            "A  B\n1  x\n2  y\nmore rows...\n",
+        ),
+        (
+            ".json",
+            r#"[{"a":1},{"a":2},{"a":3,"late":true},invalid]"#,
+            "a\n1\n2\nmore rows...\n",
+        ),
+        (
+            ".ndjson",
+            "{\"a\":1}\n{\"a\":2}\n{\"a\":3,\"late\":true}\ninvalid\n",
+            "a\n1\n2\nmore rows...\n",
+        ),
+    ] {
+        let file = fixture(contents, suffix);
+        tview_command()
+            .args(["--sorted", "false", "-n", "2"])
+            .arg(file.path())
+            .assert()
+            .success()
+            .stdout(expected)
+            .stderr("");
+    }
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_sort_override_preserves_filters_and_saved_file() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    let yaml = "name: preview\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    Name: {format: uppercase}\n  sort:\n    - {column: Count, direction: desc, kind: numeric}\n  filters:\n    - {column: Count, action: in, kind: numeric, condition: '>2'}\n";
+    let saved = views.join("preview.yml");
+    std::fs::write(&saved, yaml).unwrap();
+    let file = fixture("Name,Count\nalpha,1\nbeta,3\ngamma,5\ndelta,4\n", ".csv");
+    for (sorting, expected) in [
+        ("false", "Name  Count\nBETA      3\nmore rows...\n"),
+        ("true", "Name   Count\nGAMMA      5\n2 more rows...\n"),
+    ] {
+        tview_command()
+            .env("XDG_CONFIG_HOME", config.path())
+            .args(["--sorted", sorting, "-n", "1"])
+            .arg(file.path())
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+    assert_eq!(std::fs::read_to_string(saved).unwrap(), yaml);
+}
+
+#[test]
+fn preview_boundaries_multiline_and_nested_objects() {
+    for (contents, suffix, extra, expected) in [
+        ("A\n1\n2\n", ".csv", vec![], "A\n1\n2\n"),
+        ("", ".csv", vec![], ""),
+        (
+            "A,B\n1,\"a\nb\"\n2,c\n3,d\n",
+            ".csv",
+            vec![],
+            "A  B\n1  a\\nb\n2  c\nmore rows...\n",
+        ),
+        (
+            r#"{"data":[{"a":1},{"a":2},{"a":3}],"tail":invalid}"#,
+            ".json",
+            vec!["--json-path", "/data"],
+            "a\n1\n2\nmore rows...\n",
+        ),
+        (
+            r#"{"x":{"a":1},"y":{"a":2},"z":{"a":3},"bad":invalid}"#,
+            ".json",
+            vec!["--object-mode", "entries"],
+            "name  a\nx     1\ny     2\nmore rows...\n",
+        ),
+    ] {
+        let file = fixture(contents, suffix);
+        tview_command()
+            .args(["--sorted", "false", "--top-lines", "2"])
+            .args(extra)
+            .arg(file.path())
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+}
+
+#[test]
+fn preview_waits_only_for_required_stdin_rows() {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+    for (format, input) in [
+        ("delimited", "A\n1\n2\n3\n"),
+        ("ndjson", "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n"),
+        ("json", "[{\"a\":1},{\"a\":2},{\"a\":3},"),
+    ] {
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("tview"))
+            .env("XDG_CONFIG_HOME", tempfile::tempdir().unwrap().path())
+            .args(["--format", format, "--sorted", "false", "-n", "2", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input_pipe = child.stdin.take().unwrap();
+        input_pipe.write_all(input.as_bytes()).unwrap();
+        input_pipe.flush().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{format} preview waited for EOF");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.ends_with(b"more rows...\n"));
+        drop(input_pipe);
+    }
+}
+
+#[test]
+fn preview_errors_in_required_lookahead_leave_stdout_empty() {
+    let file = fixture(r#"[{"a":1},{"a":2},invalid]"#, ".json");
+    tview_command()
+        .args(["-n", "2"])
+        .arg(file.path())
+        .assert()
+        .code(1)
+        .stdout("");
+}
+
+#[test]
+fn preview_full_schema_and_fixed_width_are_honored() {
+    let file = fixture(r#"[{"a":"long"},{"a":"b"},{"late":true}]"#, ".json");
+    tview_command()
+        .args(["-n", "1", "--schema-scan", "full", "--width", "2"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("a   la\nlo\n2 more rows...\n");
+}
+
+#[cfg(feature = "elasticsearch")]
+#[test]
+fn elasticsearch_preview_uses_one_bounded_query_and_known_remainder() {
+    let _guard = elasticsearch_test_lock();
+    let server = ElasticsearchServer::start(vec![ElasticsearchResponse::ok(
+        r#"{"columns":[{"name":"level","type":"keyword"}],"values":[["error"],["warning"],["info"]]}"#,
+    )]);
+    tview_command()
+        .args([
+            "--format",
+            "elasticsearch",
+            "--query",
+            "FROM logs-* | KEEP level",
+            "--sorted",
+            "false",
+            "-n",
+            "1",
+            server.endpoint(),
+        ])
+        .assert()
+        .success()
+        .stdout("level\nerror\n2 more rows...\n")
+        .stderr("");
+    assert_eq!(server.requests().len(), 1);
+    assert!(server.requests()[0].contains("LIMIT 1001"));
+}
+
+#[cfg(all(feature = "saved-views", feature = "sqlite"))]
+#[test]
+fn sqlite_preview_preserves_native_order_and_does_not_refill_filtered_limit() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("sqlite.yml"), "name: sqlite\nfilenames: ['*']\nsource:\n  format: sqlite\n  table: events\n  limit: 3\n  sort:\n    - {column: id, direction: desc}\nview:\n  filters:\n    - {column: id, action: in, kind: numeric, condition: '<4'}\n  sort:\n    - {column: id, direction: asc, kind: numeric}\n").unwrap();
+    let (_directory, path) = sqlite_fixture(&[
+        "CREATE TABLE events(id INTEGER PRIMARY KEY)",
+        "INSERT INTO events VALUES (1), (2), (3), (4)",
+    ]);
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--sorted", "false", "-n", "10"])
+        .arg(path)
+        .assert()
+        .success()
+        .stdout("id\n 3\n 2\n");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_file_source_limit_and_selective_view_filters_stop_at_the_right_rows() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("filtered.yml"), "name: filtered\nfilenames: ['*']\nsource:\n  limit: 105\n  filters:\n    - {column: id, operator: is_not_null}\nview:\n  filters:\n    - {column: id, action: in, kind: numeric, condition: '>100'}\n").unwrap();
+    let content = format!(
+        "id\n{}",
+        (1..1000).map(|n| format!("{n}\n")).collect::<String>()
+    );
+    let file = fixture(&content, ".csv");
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--sorted", "false", "-n", "3"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout(" id\n101\n102\n103\nmore rows...\n");
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--sorted", "false", "-n", "10"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout(" id\n101\n102\n103\n104\n105\n");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_pending_columns_and_sorts_do_not_force_a_scan() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("late.yml"), "name: late\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    /late: {format: uppercase}\n  sort:\n    - {column: /sort, direction: desc, kind: numeric}\n  filters:\n    - {column: /late, action: in, kind: text, condition: yes}\n").unwrap();
+    let file = fixture(
+        r#"[{"a":1},{"late":"yes"},{"late":"yes","sort":2},invalid]"#,
+        ".json",
+    );
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("late\nYES\nmore rows...\n");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_color_profiles_ignore_omitted_values() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("colors.yml"), "name: colors\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    /a:\n      type: number\n      colors:\n        - gradient: {mode: auto, steps: 8, colors: [green, yellow]}\n").unwrap();
+    let mut rendered = Vec::new();
+    for tail in ["3", "99999999"] {
+        let file = fixture(
+            &format!("[{{\"a\":1}},{{\"a\":2}},{{\"a\":{tail}}},invalid]"),
+            ".json",
+        );
+        let output = tview_command()
+            .env("XDG_CONFIG_HOME", config.path())
+            .args([
+                "--sorted", "false", "-n", "2", "--color", "always", "--width", "max",
+            ])
+            .arg(file.path())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert!(output.windows(2).any(|bytes| bytes == b"\x1b["));
+        assert!(output.ends_with(b"more rows...\n"));
+        rendered.push(output);
+        tview_command()
+            .env("XDG_CONFIG_HOME", config.path())
+            .args(["--sorted", "false", "-n", "2", "--color", "never"])
+            .arg(file.path())
+            .assert()
+            .success()
+            .stdout("a\n1\n2\nmore rows...\n");
+    }
+    assert_eq!(rendered[0], rendered[1]);
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_source_filters_resolve_late_json_fields() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("source.yml"), "name: source\nfilenames: ['*']\nsource:\n  filters:\n    - {column: /late, operator: equal, value: 'yes'}\nview: {}\n").unwrap();
+    let file = fixture(
+        r#"[{"a":1},{"late":"yes"},{"late":"yes"},invalid]"#,
+        ".json",
+    );
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("late\nyes\nmore rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn sorted_json_preview_profiles_only_selected_rows() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("sort.yml"), "name: sort\nfilenames: ['*']\nsource: {}\nview:\n  sort:\n    - {column: /a, direction: desc, kind: numeric}\n").unwrap();
+    let file = fixture(
+        r#"[{"a":1,"other":"wide-value"},{"a":9,"winner":"yes"},{"a":2}]"#,
+        ".json",
+    );
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("a  winner\n9  yes\n2 more rows...\n")
+        .stderr("");
+}

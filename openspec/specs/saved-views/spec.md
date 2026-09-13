@@ -553,7 +553,7 @@ A saved view SHALL accept `source.object_mode: auto|record|entries` as a format-
 - **THEN** it omits `source.object_mode`
 
 ### Requirement: Saved views in non-interactive output
-When compiled with saved-view support, batch output SHALL perform the same saved-view selection and apply nested `source` configuration before opening and nested `view` configuration before emitting stdout.
+When compiled with saved-view support, batch output SHALL perform the same saved-view selection and apply nested `source` configuration before opening and nested `view` configuration before emitting stdout. For direct table output, `--sorted false` SHALL suppress all saved `view.sort` application, including pending sort keys, while preserving filters, columns, formatting, and nested source configuration. Preview limits SHALL apply after the effective view operations. Neither option SHALL modify the saved file.
 
 #### Scenario: Automatically selected view
 - **WHEN** redirected output opens a filename matching a saved view
@@ -582,6 +582,14 @@ When compiled with saved-view support, batch output SHALL perform the same saved
 #### Scenario: Interactive transformation starts from saved view
 - **WHEN** `--interactive` and `--output <format>` are combined
 - **THEN** the TUI starts from nested saved configuration and final output uses subsequent live changes
+
+#### Scenario: Preview disables saved sort only
+- **WHEN** direct table output uses `--sorted false -n 30` with a saved view that defines source ordering, view sorting, filters, and formatting
+- **THEN** source ordering, filters, and formatting remain active, view sorting is skipped, and at most 30 matching rows are emitted
+
+#### Scenario: Late sort key stays disabled
+- **WHEN** `--sorted false` is active and schema discovery resolves a pending saved view sort column
+- **THEN** Tview does not apply that sort or trigger a full scan for it
 
 ### Requirement: Layered saved operations
 Saved views SHALL represent source filtering and sorting separately from view filtering and sorting. Source operations SHALL determine the bounded source result before `source.limit`; view operations SHALL transform only that result.

@@ -1,3 +1,5 @@
+mod preview;
+pub(crate) use preview::PreviewSourceStore;
 mod executor;
 mod model;
 mod query;
@@ -43,6 +45,11 @@ pub struct SourceFieldMetadata {
 }
 
 pub trait TableStore: Send {
+    /// Columns explicitly present in a structured source row, before null padding.
+    fn present_columns(&self, _row: RowId) -> Option<Vec<usize>> {
+        None
+    }
+
     fn generation(&self) -> SourceGeneration;
     fn row_count(&self) -> RowCount;
     fn column_count(&self) -> usize;
