@@ -1,21 +1,19 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
-
 ## [Unreleased]
 
 ### Removed
 
 - Breaking: removed support for the upstream Python import API. Keep Python
   integrations on upstream Tabview or follow the [migration steps](docs/migration.md).
-- Removed Python packaging and runtime support from the maintained
-  implementation path.
+- Removed Python packaging and runtime support from the Rust rewrite.
 - Removed the legacy Travis CI configuration.
 
 ### Changed
 
 - Start Tview at `0.1.0` with an independent release sequence; retain upstream
   Tabview history and attribution. During 0.x, incompatible changes use minor releases.
+- Shortened the README and moved detailed usage into focused user guides.
 - Adopted shared repository checks, documentation validation, compiler pins, and
   native release packaging. Minimum Rust is 1.90.0.
 - Breaking: renamed the Rust rewrite to `tview`, including its crate, executable,
@@ -33,13 +31,12 @@ All notable changes to this project are documented in this file.
   integration.
 - Made large seekable inputs open through incremental stores with partial row
   counts, bounded initial rendering, and controlled full-table operations.
-- Made sort and filter execution source-neutral while preserving typed values,
-  stable row identity, null placement, and failure-safe query transitions.
+- Unified sorting and filtering across sources. Preserved typed values, stable
+  row identity, null placement, and the previous result when a query fails.
 
 ### Added
 
 - Added explicit JSON and JSONL export of displayed cells and `--version`.
-
 - Added Rust test coverage for CLI compatibility, data ingestion, table
   operations, rendering snapshots, and accepted behavior changes.
 - Added JSON and NDJSON table inputs with automatic or explicit format

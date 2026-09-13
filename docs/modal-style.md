@@ -2,19 +2,18 @@
 type: Guide
 title: Modal style
 description: Layout and keyboard interaction rules for terminal modal dialogs.
-generated: { by: codex/gpt-6, at: 2026-09-07T02:19:31Z }
+generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
 ---
 
-# Modal Style
+# Modal style
 
 Use these rules for terminal modal dialogs.
 
 ## Layout
 
-- Always keep one blank character of padding inside the modal for content.
+- Keep one blank character between the border and content.
 - Left-align the title in title case.
-- Put one character of padding before the title, after the left border.
-- Keep one border character on the left before title padding.
+- Put one space between the left border and the title.
 - Use title case for section headers.
 - Use two-column section layouts when the modal has several short sections.
 - Skip section headers in keyboard navigation.
@@ -24,7 +23,7 @@ Use these rules for terminal modal dialogs.
 - Put modal actions in the lower-right border as `[ Name ]` buttons.
 - Use `Tab` and `Shift+Tab` to move forward and backward between groups.
 - Use arrow keys to navigate all options in the active group.
-- Use `Space` to activate or deactivate the currently selected item.
+- Use `Space` to activate or deactivate the selected item.
 - Use dim terminal text, dark white or bright black, for disabled options.
 
 ## Example

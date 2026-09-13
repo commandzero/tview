@@ -3,15 +3,15 @@
 ## `us-counties.sqlite3`
 
 `us-counties.sqlite3` is a small, read-only example database built from the
-U.S. Census Bureau's 2010–2020 county population estimates. Work created by
+U.S. Census Bureau's 2010 to 2020 county population estimates. Work created by
 Census Bureau employees is [generally not subject to copyright][public-access],
 and the Bureau publishes its public data as open data.
 
-- Source: [County Population Totals: 2010–2020][dataset]
+- Source: [County Population Totals: 2010 to 2020][dataset]
 - Source file: [Annual Resident Population Estimates for Counties][csv]
-- Selection: the 1,000 most populous county-level records (`SUMLEV=050`) by
+- Selection: the 1,000 most populous county-level records with `SUMLEV=050`, ordered by
   `POPESTIMATE2020`, descending, with numeric state/county FIPS as the
-  deterministic tie-breaker
+  tie-breaker
 - Table: `counties`
 - Shape: 1,000 rows and 16 columns
 - SHA-256:
@@ -19,9 +19,9 @@ and the Bureau publishes its public data as open data.
 
 The columns preserve county identity and geography alongside selected Census
 2010 counts and 2015, 2019, and 2020 estimates. The 2020 population change,
-births, deaths, domestic migration, and net migration rate fields provide
-useful positive, negative, and floating-point values for filtering, sorting,
-and formatting examples.
+births, deaths, domestic migration, and net migration rate fields contain
+positive, negative, and floating-point values for filtering, sorting, and
+formatting examples.
 
 Open it with:
 
