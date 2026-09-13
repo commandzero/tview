@@ -175,7 +175,8 @@ stable generated color. `colors: auto` uses the active theme's
 `[identifiers].colors` families; a view can override those families with a color
 array. Each family generates 16 dark-to-light shades, and identifiers cycle
 across families before advancing shades. The darkest shade matches the family's
-ANSI dark/dim foreground color.
+ANSI dark/dim foreground color or a brighter value, so it is never darker than
+that color.
 
 ## Saving a view
 
