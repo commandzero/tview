@@ -73,7 +73,10 @@ text values remain distinct. JSON `null` differs from an empty string.
 
 ## Format detection
 
-`--format auto|delimited|json|ndjson|sqlite|elasticsearch` defaults to `auto`.
+`--format auto|delimited|json|ndjson` is always available. Builds with the
+`sqlite` Cargo feature also accept `--format sqlite`; builds with the
+`elasticsearch` feature also accept `--format elasticsearch`. The default is
+`auto`.
 Batch stdin is treated as delimited under `auto` unless an explicit or saved
 structured format, or a structured option such as `--json-path`, selects
 JSON/NDJSON. Use `--format json` or `--format ndjson` for structured stdin.

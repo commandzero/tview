@@ -31,7 +31,7 @@ position.
 | `i` | Edit the current column view configuration, sort state, and filter action. |
 | `u` | Edit staged source filters, native sort, and source limit. |
 | `V` | Show source-independent view configuration. |
-| `p` | Open the source query popup. Press `y` in the popup to copy the query when available. |
+| `p` | Open the source query popup. Press `y` in the popup to copy the query when available and clipboard support is enabled. |
 | `f`, `F` | Filter in or filter out rows by the current column. `Tab` cycles text, regex, and numeric modes; submitting an empty condition clears filters for the current column. |
 | `n` | Go to the next search result. |
 | `N` | Go to the previous search result. |

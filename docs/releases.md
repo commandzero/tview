@@ -87,5 +87,8 @@ bash scripts/release-check.sh v0.1.0
 bash scripts/release-package.sh aarch64-apple-darwin dist
 ```
 
-The first command requires a dated release section and a tag pointing at HEAD.
-The second builds and tests an archive locally without uploading it.
+The first command intentionally rejects a changelog with only `Unreleased`; run
+it after adding a dated release section and a tag pointing at HEAD. The second
+builds and tests an archive locally without uploading it. It does not replace
+the native platform matrix, so do not call the release tested until those jobs
+complete.
