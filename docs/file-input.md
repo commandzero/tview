@@ -74,9 +74,10 @@ text values remain distinct. JSON `null` differs from an empty string.
 ## Format detection
 
 `--format auto|delimited|json|ndjson|sqlite|elasticsearch` defaults to `auto`.
-An unambiguous URL scheme can select a source format: `libsql://` resolves to
-SQLite and `file://` resolves to a local path. HTTP and HTTPS URLs require
-`--format elasticsearch`; Tview does not fetch remote content to guess its type.
+An unambiguous URL scheme can select a source format: `libsql://` is recognized
+as SQLite but remains unsupported and reserved for future use; `file://`
+resolves to a local path. HTTP and HTTPS URLs require `--format elasticsearch`;
+Tview does not fetch remote content to guess its type.
 Tview checks filename extensions before probing a bounded sample; SQLite's
 `SQLite format 3` signature is recognized before any text decoding. An explicit
 format always wins. Delimited-only options imply delimited input under `auto`
