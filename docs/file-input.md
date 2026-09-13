@@ -74,6 +74,9 @@ text values remain distinct. JSON `null` differs from an empty string.
 ## Format detection
 
 `--format auto|delimited|json|ndjson|sqlite|elasticsearch` defaults to `auto`.
+Batch stdin is treated as delimited under `auto` unless an explicit or saved
+structured format, or a structured option such as `--json-path`, selects
+JSON/NDJSON. Use `--format json` or `--format ndjson` for structured stdin.
 An unambiguous URL scheme can select a source format: `libsql://` is recognized
 as SQLite but remains unsupported and reserved for future use; `file://`
 resolves to a local path. HTTP and HTTPS URLs require `--format elasticsearch`;
