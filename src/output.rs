@@ -317,7 +317,7 @@ fn prepare<'a>(
     requirements: OutputRequirements,
 ) -> anyhow::Result<PreparedOutput<'a>> {
     if requirements.complete_rows {
-        view.complete_for_output()?;
+        view.complete_for_output_with_color(requirements.conditional_styles)?;
     }
     let header = view
         .output_header()

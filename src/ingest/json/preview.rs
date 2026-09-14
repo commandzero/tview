@@ -275,12 +275,11 @@ fn open_reader(
             options.object_mode,
             options.object_mode_origin,
             options.object_mode == ObjectMode::Auto
-                && (detection_incomplete
-                    || if preview_stdin {
-                        detect_keyed_object_with_minimum(&sample, 2)?
-                    } else {
-                        detect_keyed_object(&sample)?
-                    }),
+                && if detection_incomplete || preview_stdin {
+                    detect_keyed_object_with_minimum(&sample, 2)?
+                } else {
+                    detect_keyed_object(&sample)?
+                },
         )?;
         object_mode = resolution.object_mode;
         if resolution.table_shape == Some(SelectedTableShape::ObjectRecord) {

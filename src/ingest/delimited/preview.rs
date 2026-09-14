@@ -14,6 +14,7 @@ struct DecodedReader {
     eof: bool,
     fallback_path: Option<PathBuf>,
     raw_consumed: u64,
+    decoder_pending_start: Option<u64>,
 }
 
 impl DecodedReader {
@@ -21,7 +22,11 @@ impl DecodedReader {
         let Some(path) = self.fallback_path.take() else {
             return Ok(false);
         };
-        let bytes = std::fs::read(path)?;
+        const ENCODING_FALLBACK_PROBE_BYTES: u64 = 8 * 1024 * 1024;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(ENCODING_FALLBACK_PROBE_BYTES)
+            .read_to_end(&mut bytes)?;
         let decoded = crate::ingest::decode_input(&bytes, None)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         if decoded.encoding == "utf-8" {
@@ -59,6 +64,7 @@ impl DecodedReader {
         self.pending = std::io::Cursor::new(Vec::new());
         self.eof = false;
         self.raw_consumed = offset;
+        self.decoder_pending_start = None;
         Ok(true)
     }
 }
@@ -93,14 +99,20 @@ impl Read for DecodedReader {
                 self.input.consume(consumed);
                 let previous_consumed = self.raw_consumed;
                 self.raw_consumed += consumed as u64;
+                let restart_offset = self.decoder_pending_start.unwrap_or(previous_consumed);
                 if errors {
-                    if self.restart_with_fallback(previous_consumed)? {
+                    if self.restart_with_fallback(restart_offset)? {
                         continue;
                     }
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "input cannot be decoded with the selected encoding",
                     ));
+                }
+                if text.is_empty() && consumed > 0 {
+                    self.decoder_pending_start.get_or_insert(previous_consumed);
+                } else if !text.is_empty() {
+                    self.decoder_pending_start = None;
                 }
                 self.eof = eof;
             }
@@ -245,6 +257,7 @@ fn open_reader(
             eof: false,
             fallback_path,
             raw_consumed: 0,
+            decoder_pending_start: None,
         })
     };
     let mut decoded = BufReader::new(decoded);
@@ -296,10 +309,13 @@ fn open_reader(
     };
     let mut sample = Vec::new();
     for _ in 0..2 {
-        if let Some(row) = records.next()? {
-            sample.push(row);
-        } else {
-            break;
+        match records.next() {
+            Ok(Some(row)) => sample.push(row),
+            Ok(None) => break,
+            Err(_) if options.limit.is_some_and(|limit| limit.get() == 1) && sample.len() == 1 => {
+                break;
+            }
+            Err(error) => return Err(error),
         }
     }
     let generation = SourceGeneration::new();

@@ -2661,7 +2661,7 @@ impl TableView {
         self.complete_for_output_with_color(true)
     }
 
-    fn complete_for_output_with_color(&mut self, colored: bool) -> anyhow::Result<()> {
+    pub(crate) fn complete_for_output_with_color(&mut self, colored: bool) -> anyhow::Result<()> {
         if let Some(shared) = self.incremental_store.clone() {
             let progress = shared
                 .0
