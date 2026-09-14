@@ -186,6 +186,7 @@ struct SequentialDelimited {
     records: Records,
     definition: TableDefinition,
     initial_schema_column_count: usize,
+    live_input: bool,
     rows: Vec<Row>,
     eof: bool,
 }
@@ -367,6 +368,7 @@ fn open_reader(
         records,
         definition: definition.clone(),
         initial_schema_column_count,
+        live_input: matches!(&source, InputSource::Stdin),
         rows,
         eof: false,
     };
@@ -401,6 +403,9 @@ impl TableStore for SequentialDelimited {
     }
     fn initial_schema_column_count(&self) -> usize {
         self.initial_schema_column_count
+    }
+    fn is_live_input(&self) -> bool {
+        self.live_input
     }
     fn row_count(&self) -> RowCount {
         if self.eof {

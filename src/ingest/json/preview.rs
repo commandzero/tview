@@ -14,6 +14,7 @@ enum Shape {
 struct SequentialJson {
     reader: Reader,
     shape: Shape,
+    live_input: bool,
     first: bool,
     pending: VecDeque<FlatRow>,
     seen: HashSet<String>,
@@ -231,6 +232,7 @@ fn open_reader(
     let mut store = SequentialJson {
         reader,
         shape,
+        live_input: matches!(&source, InputSource::Stdin),
         first: true,
         pending: VecDeque::new(),
         seen: HashSet::new(),
@@ -347,6 +349,9 @@ impl TableStore for SequentialJson {
     }
     fn initial_schema_column_count(&self) -> usize {
         0
+    }
+    fn is_live_input(&self) -> bool {
+        self.live_input
     }
     fn row_count(&self) -> RowCount {
         if self.eof && self.pending.is_empty() {

@@ -2504,7 +2504,9 @@ impl TableView {
             self.row_ids.truncate(limit);
             self.visible_rows = (0..self.rows.len()).collect();
             remaining = (total > limit).then_some(
-                if has_sort || needs_full_materialization || self.filters.is_empty() {
+                if !self.source_result_is_partial()
+                    && (has_sort || needs_full_materialization || self.filters.is_empty())
+                {
                     crate::table::RowCount::Exact(total.saturating_sub(limit))
                 } else {
                     crate::table::RowCount::Unknown
@@ -2515,6 +2517,7 @@ impl TableView {
                 .incremental_store
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
+            let live_input = shared.0.borrow().is_live_input();
             let defer_schema_for_filter = full_schema || !self.filters.is_empty() || {
                 #[cfg(feature = "saved-views")]
                 {
@@ -2536,6 +2539,10 @@ impl TableView {
             loop {
                 // Retain the emitted schema while lookahead checks later matching rows.
                 if !full_schema && selected.len() == limit && prefix_state.is_none() {
+                    if live_input {
+                        more = true;
+                        break;
+                    }
                     prefix_state = Some(self.clone());
                 }
                 #[cfg(feature = "saved-views")]
@@ -2571,7 +2578,9 @@ impl TableView {
                             matched_total += 1;
                             if selected.len() == limit {
                                 more = true;
-                                break;
+                                if !full_schema {
+                                    break;
+                                }
                             }
                             ids.push(row_id);
                             selected.push(cells);

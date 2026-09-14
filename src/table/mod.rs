@@ -56,6 +56,9 @@ pub trait TableStore: Send {
     fn initial_schema_column_count(&self) -> usize {
         self.column_count()
     }
+    fn is_live_input(&self) -> bool {
+        false
+    }
     fn row(&mut self, index: RowIndex) -> anyhow::Result<Option<Row>>;
     fn ensure_indexed_through(&mut self, index: RowIndex) -> anyhow::Result<IndexProgress>;
     fn index_and_scan_rows(

@@ -118,6 +118,9 @@ impl TableStore for PreviewSourceStore {
     fn column_count(&self) -> usize {
         self.exposed_column_count
     }
+    fn is_live_input(&self) -> bool {
+        self.base.is_live_input()
+    }
     fn row_count(&self) -> RowCount {
         if self.complete {
             RowCount::Exact(self.rows.len())
