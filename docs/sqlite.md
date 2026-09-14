@@ -14,8 +14,9 @@ tview sample/us-counties.sqlite3 --format sqlite --table counties
 
 Tview opens local SQLite files through Turso. It selects the table or compatible
 ordinary view automatically when only one is available. With several choices,
-the viewer opens a table picker. Batch output requires `--table <name>` or a
-saved `source.table` unless a query selects the data.
+the viewer opens a table picker. Batch output also selects the sole available
+table or view automatically. When several relations are available, pass
+`--table <name>` or a saved `source.table`, unless a query selects the data.
 
 SQLite input requires a local file. Stdin, Turso Cloud, `libsql://`, and other
 remote SQLite URLs are unsupported. The `libsql://` scheme is reserved for

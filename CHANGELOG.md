@@ -13,6 +13,7 @@
 
 - Start Tview at `0.1.0` with an independent release sequence; retain upstream
   Tabview history and attribution. During 0.x, incompatible changes use minor releases.
+- Shortened the README and moved detailed usage into focused user guides.
 - Adopted shared repository checks, documentation validation, compiler pins, and
   native release packaging. Minimum Rust is 1.90.0.
 - Breaking: renamed the Rust rewrite to `tview`, including its crate, executable,
