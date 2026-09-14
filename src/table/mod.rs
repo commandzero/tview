@@ -77,6 +77,9 @@ pub trait TableStore: Send {
     fn active_source_query(&self) -> Option<&SourceQuery> {
         None
     }
+    fn has_source_filters(&self) -> bool {
+        false
+    }
     fn execute_source_query(
         &mut self,
         _query: &SourceQuery,
@@ -756,6 +759,10 @@ impl TableStore for FileSourceQueryStore {
 
     fn active_source_query(&self) -> Option<&SourceQuery> {
         Some(&self.active_query)
+    }
+
+    fn has_source_filters(&self) -> bool {
+        !self.active_query.filters.is_empty()
     }
 
     fn execute_source_query(

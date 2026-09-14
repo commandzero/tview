@@ -1581,6 +1581,22 @@ impl TableView {
             .numeric_profile(ColumnIndex::new(source_column))
     }
 
+    fn reparse_numeric_filters(&mut self, rows: &[Vec<String>]) {
+        let columns = Columns::infer(self.header.as_deref(), rows);
+        for filter in &mut self.filters {
+            if filter.kind != FilterKind::Numeric {
+                continue;
+            }
+            if let Ok(condition) = FilterCondition::parse(
+                FilterKind::Numeric,
+                &filter.input,
+                columns.numeric_profile(ColumnIndex::new(filter.column)),
+            ) {
+                filter.condition = condition;
+            }
+        }
+    }
+
     pub(crate) fn filter_kind_enabled(&self, column: usize, kind: FilterKind) -> bool {
         kind != FilterKind::Numeric || self.is_numeric_column(column)
     }
@@ -2417,11 +2433,22 @@ impl TableView {
         colored: bool,
         full_schema: bool,
     ) -> anyhow::Result<Option<crate::table::RowCount>> {
+        let needs_full_materialization = self
+            .filters
+            .iter()
+            .any(|filter| filter.kind == FilterKind::Numeric);
+        #[cfg(feature = "saved-views")]
+        let needs_full_materialization = needs_full_materialization
+            || self
+                .pending_saved_filters
+                .iter()
+                .any(|filter| matches!(filter.kind, crate::saved_views::FilterKind::Numeric));
         let has_sort = !self.sort_keys.is_empty();
+        let materialize_before_filtering = has_sort || needs_full_materialization;
         #[cfg(feature = "saved-views")]
         let has_sort = has_sort || !self.pending_saved_sorts.is_empty();
         let remaining;
-        if has_sort {
+        if materialize_before_filtering || has_sort {
             // Discover the full sorting schema before a query store consumes its deltas.
             if let Some(shared) = self.incremental_store.clone() {
                 let progress = shared
@@ -2429,6 +2456,16 @@ impl TableView {
                     .borrow_mut()
                     .ensure_indexed_through(RowIndex(usize::MAX))?;
                 self.apply_source_schema_delta(progress.schema_delta)?;
+                if needs_full_materialization {
+                    let base = shared.0.borrow_mut().materialize()?;
+                    let rows = base
+                        .rows()
+                        .iter()
+                        .map(crate::table::Row::display_cells)
+                        .collect::<Vec<_>>();
+                    self.reparse_numeric_filters(&rows);
+                    self.source_store = Some(base);
+                }
             }
             self.preview_preparing = false;
             self.apply_query_configuration();
@@ -2437,8 +2474,11 @@ impl TableView {
             self.rows.truncate(limit);
             self.row_ids.truncate(limit);
             self.visible_rows = (0..self.rows.len()).collect();
-            remaining = (total > limit)
-                .then_some(crate::table::RowCount::Exact(total.saturating_sub(limit)));
+            remaining = (total > limit).then_some(if has_sort || self.filters.is_empty() {
+                crate::table::RowCount::Exact(total.saturating_sub(limit))
+            } else {
+                crate::table::RowCount::Unknown
+            });
         } else {
             let shared = self
                 .incremental_store
@@ -2451,26 +2491,53 @@ impl TableView {
                     .ensure_indexed_through(RowIndex(usize::MAX))?;
                 self.apply_source_schema_delta(progress.schema_delta)?;
             }
-            let mut selected = Vec::new();
+            let mut selected: Vec<Vec<String>> = Vec::new();
             let mut ids = Vec::new();
             let mut index = 0;
             let mut more = false;
             let mut prefix_state = None;
+            let mut deferred: Vec<(crate::table::RowId, Vec<String>)> = Vec::new();
             loop {
                 // Retain the emitted schema while lookahead checks later matching rows.
                 if selected.len() == limit && prefix_state.is_none() {
                     prefix_state = Some(self.clone());
                 }
+                #[cfg(feature = "saved-views")]
+                let pending_before = !self.pending_saved_filters.is_empty();
                 let progress = shared
                     .0
                     .borrow_mut()
                     .ensure_indexed_through(RowIndex(index))?;
                 self.apply_source_schema_delta(progress.schema_delta)?;
+                #[cfg(feature = "saved-views")]
+                let pending_resolved = pending_before && self.pending_saved_filters.is_empty();
+                #[cfg(not(feature = "saved-views"))]
+                let pending_resolved = false;
+                if pending_resolved {
+                    for (row_id, cells) in deferred.drain(..) {
+                        if self.row_passes_filters(&cells) {
+                            if selected.len() == limit {
+                                more = true;
+                                break;
+                            }
+                            ids.push(row_id);
+                            selected.push(cells);
+                        }
+                    }
+                    if more {
+                        break;
+                    }
+                }
                 let Some(row) = shared.0.borrow_mut().row(RowIndex(index))? else {
                     break;
                 };
                 index += 1;
                 let cells = row.display_cells();
+                #[cfg(feature = "saved-views")]
+                if !self.pending_saved_filters.is_empty() {
+                    deferred.push((row.id, cells));
+                    continue;
+                }
                 if self.row_passes_filters(&cells) {
                     if selected.len() == limit {
                         more = true;
@@ -2498,11 +2565,11 @@ impl TableView {
             self.row_ids = ids;
         }
         let source_filter_active = self.incremental_store.as_ref().is_some_and(|shared| {
-            shared
-                .0
-                .borrow()
-                .active_source_query()
-                .is_some_and(|query| !query.filters.is_empty())
+            let store = shared.0.borrow();
+            store.has_source_filters()
+                || store
+                    .active_source_query()
+                    .is_some_and(|query| !query.filters.is_empty())
         });
         if (!full_schema || source_filter_active) && !self.row_ids.is_empty() {
             if let Some(shared) = &self.incremental_store {
@@ -3720,27 +3787,6 @@ impl TableView {
     }
 
     fn row_passes_filters(&self, row: &[String]) -> bool {
-        #[cfg(feature = "saved-views")]
-        if self.preview_preparing
-            && !self.pending_saved_filters.iter().all(|filter| {
-                let mode = match filter.action {
-                    crate::saved_views::FilterAction::In => FilterMode::In,
-                    crate::saved_views::FilterAction::Out => FilterMode::Out,
-                };
-                let kind = match filter.kind {
-                    crate::saved_views::FilterKind::Text => FilterKind::Text,
-                    crate::saved_views::FilterKind::Regex => FilterKind::Regex,
-                    crate::saved_views::FilterKind::Numeric => FilterKind::Numeric,
-                };
-                let profile = crate::ops::sort::NumericColumnProfile::default();
-                FilterCondition::parse(kind, &filter.condition, profile).is_ok_and(|condition| {
-                    ActiveFilter::new(usize::MAX, mode, kind, filter.condition.clone(), condition)
-                        .accepts_values("", "", profile)
-                })
-            })
-        {
-            return false;
-        }
         self.filters.iter().all(|filter| {
             let raw = row
                 .get(filter.column)

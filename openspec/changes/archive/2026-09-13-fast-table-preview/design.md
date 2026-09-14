@@ -45,6 +45,6 @@ Prepare the prefix and required lookahead before writing. Errors encountered the
 - Early stdin termination can close the producer's pipe. Document it as normal preview behavior.
 - An unknown count gives less information. Prefer honest `more rows...` to a full counting pass or a misleading estimate.
 
-## Migration plan
+## Archived state
 
-Add the options without changing existing invocations. Update the output guide and CLI help when implemented. Keep this change active until implementation, regression checks, and review are complete; do not synchronize or archive the draft proposal now.
+The options, output guide, CLI help, implementation, regression checks, and review were completed. The delta specs were synchronized into the main specs and this change was archived.

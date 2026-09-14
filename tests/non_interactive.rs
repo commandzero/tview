@@ -826,6 +826,60 @@ fn preview_waits_only_for_required_stdin_rows() {
 }
 
 #[test]
+fn preview_auto_keyed_object_does_not_wait_for_object_eof() {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("tview"))
+        .args(["--format", "json", "--sorted", "false", "-n", "1", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(br#"{"a":{"id":1},"b":{"id":2},"c":{"id":3},"d":{"id":4}"#)
+        .unwrap();
+    input.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("keyed-object preview waited for EOF");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "name  id\na      1\nmore rows...\n"
+    );
+}
+
+#[test]
+fn preview_ndjson_rejects_scalar_documents() {
+    tview_command()
+        .args(["--format", "ndjson", "--sorted", "false", "-n", "1", "-"])
+        .write_stdin("1\n")
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "JSON starting path does not identify an object or array",
+        ));
+}
+
+#[test]
 fn preview_errors_in_required_lookahead_leave_stdout_empty() {
     let file = fixture(r#"[{"a":1},{"a":2},invalid]"#, ".json");
     tview_command()
@@ -902,6 +956,83 @@ fn preview_source_limit_reports_exact_remainder() {
         .assert()
         .success()
         .stdout("id\n 1\n1 more rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_source_limit_validates_unresolved_source_filters() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("unknown.yml"),
+        "name: unknown\nfilenames: ['*']\nsource:\n  limit: 1\n  filters:\n    - {column: late, operator: is_null}\nview: {}\n",
+    )
+    .unwrap();
+    let file = fixture("id\n1\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "unknown", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "source operation column 'late' was not found",
+        ));
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_missing_saved_filters_do_not_discard_rows() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("missing.yml"),
+        "name: missing\nfilenames: ['*']\nsource: {}\nview:\n  filters:\n    - {column: /missing, action: in, kind: text, condition: yes}\n",
+    )
+    .unwrap();
+    let file = fixture(r#"[{"a":1},{"a":2}]"#, ".json");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "missing", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("a\n1\n1 more rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_numeric_saved_filters_use_late_profile_evidence() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("numeric.yml"),
+        r#"name: numeric
+filenames: ['*']
+source: {}
+view:
+  filters:
+    - {column: Value, action: in, kind: numeric, condition: '>2m'}
+"#,
+    )
+    .unwrap();
+    let file = fixture("Name,Value\na,1\nb,2m\nc,3s\nd,1h\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "numeric", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("Name  Value\nd        1h\n")
         .stderr("");
 }
 

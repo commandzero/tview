@@ -46,6 +46,40 @@ impl PreviewSourceStore {
             exposed_column_count,
         })
     }
+
+    fn request_resolved(&self, request: &crate::ingest::SourceFilterRequest) -> bool {
+        request.column == "*"
+            || self
+                .definition
+                .columns
+                .iter()
+                .any(|column| column.display_name == request.column)
+            || self
+                .definition
+                .columns
+                .iter()
+                .enumerate()
+                .any(|(index, _)| {
+                    self.definition.canonical_column_key(index).as_deref() == Some(&request.column)
+                })
+    }
+
+    fn requests_resolved(&self) -> bool {
+        self.requests
+            .iter()
+            .all(|request| self.request_resolved(request))
+    }
+
+    fn validate_requests(&self) -> anyhow::Result<()> {
+        for request in &self.requests {
+            anyhow::ensure!(
+                self.request_resolved(request),
+                "source operation column '{}' was not found",
+                request.column
+            );
+        }
+        Ok(())
+    }
 }
 
 impl TableStore for PreviewSourceStore {
@@ -79,7 +113,7 @@ impl TableStore for PreviewSourceStore {
         let mut delta = SchemaDelta::default();
         let mut bytes_scanned = 0;
         while !self.complete && self.rows.len() <= index.0 {
-            if self.rows.len() == self.query.limit.get() {
+            if self.rows.len() >= self.query.limit.get() && self.requests_resolved() {
                 self.complete = true;
                 break;
             }
@@ -87,23 +121,7 @@ impl TableStore for PreviewSourceStore {
             self.definition.apply_delta(progress.schema_delta.clone())?;
             bytes_scanned += progress.bytes_scanned;
             let Some(row) = self.base.row(RowIndex(self.next))? else {
-                for request in &self.requests {
-                    anyhow::ensure!(
-                        request.column == "*"
-                            || self
-                                .definition
-                                .columns
-                                .iter()
-                                .enumerate()
-                                .any(|(index, column)| {
-                                    column.display_name == request.column
-                                        || self.definition.canonical_column_key(index).as_deref()
-                                            == Some(&request.column)
-                                }),
-                        "source operation column '{}' was not found",
-                        request.column
-                    );
-                }
+                self.validate_requests()?;
                 self.complete = true;
                 break;
             };
@@ -174,10 +192,14 @@ impl TableStore for PreviewSourceStore {
                 delta
                     .widened_types
                     .extend(progress.schema_delta.widened_types);
-                self.rows.push(row);
-                if self.rows.len() == self.query.limit.get() {
+                if self.rows.len() < self.query.limit.get() {
+                    self.rows.push(row);
+                }
+                if self.rows.len() >= self.query.limit.get() && self.requests_resolved() {
                     self.complete = true;
                 }
+            } else if self.rows.len() >= self.query.limit.get() && self.requests_resolved() {
+                self.complete = true;
             }
         }
         delta.completed = self.complete;
@@ -223,5 +245,9 @@ impl TableStore for PreviewSourceStore {
     }
     fn active_source_query(&self) -> Option<&SourceQuery> {
         Some(&self.query)
+    }
+
+    fn has_source_filters(&self) -> bool {
+        !self.requests.is_empty()
     }
 }

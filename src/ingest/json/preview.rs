@@ -166,10 +166,12 @@ impl SequentialJson {
                     return Ok(None);
                 }
                 let row: Value = value(&mut self.reader)?;
-                Ok(Some(flatten_row(resolve_pointer(
-                    &row,
-                    self.pointer.as_ref(),
-                )?)?))
+                let selected = resolve_pointer(&row, self.pointer.as_ref())?;
+                anyhow::ensure!(
+                    matches!(selected, Value::Object(_) | Value::Array(_)),
+                    "JSON starting path does not identify an object or array"
+                );
+                Ok(Some(flatten_row(selected)?))
             }
         }
     }
@@ -244,8 +246,12 @@ fn open_reader(
         let mut sample = Vec::new();
         if options.object_mode == ObjectMode::Auto {
             let mut bytes = 0;
-            while sample.len() < OBJECT_DETECTION_MAX_ENTRIES && bytes < OBJECT_DETECTION_MAX_BYTES
-            {
+            let max_entries = if options.preview {
+                3
+            } else {
+                OBJECT_DETECTION_MAX_ENTRIES
+            };
+            while sample.len() < max_entries && bytes < OBJECT_DETECTION_MAX_BYTES {
                 let Some(entry) = store.next_entry()? else {
                     break;
                 };
