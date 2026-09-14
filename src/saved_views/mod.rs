@@ -726,7 +726,7 @@ pub fn resolve_structured_column_reference(
                 .filter(|(_, column)| column.display_name == key)
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>();
-            (matches.len() == 1).then_some(matches[0])
+            (matches.len() == 1).then(|| matches[0])
         })
 }
 

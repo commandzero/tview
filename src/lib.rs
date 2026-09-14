@@ -24,6 +24,11 @@ pub fn run(args: cli::Args) -> anyhow::Result<()> {
         config.output,
         std::io::stdout().is_terminal(),
     );
+    if (config.sorted.is_some() || config.top_lines.is_some())
+        && execution != output::ExecutionMode::Batch(output::OutputFormat::Table)
+    {
+        anyhow::bail!("--sorted and --top-lines require direct table output");
+    }
     let theme_load = theme::load_active_theme(None)?;
     let source = config.target.clone();
     match execution {
@@ -33,7 +38,16 @@ pub fn run(args: cli::Args) -> anyhow::Result<()> {
             };
             emit_diagnostics(&app.diagnostics);
             emit_source_result_warnings(&app.view);
-            output::write_view_to_stdout(format, config.color, &mut app.view, &app.theme)
+            if let Some(limit) = config.top_lines {
+                let remaining = app.view.prepare_preview(
+                    limit.get(),
+                    config.color == output::ColorOutput::Always,
+                    app.open_options.schema_scan == ingest::SchemaScan::Full,
+                )?;
+                output::write_preview_to_stdout(config.color, &mut app.view, &app.theme, remaining)
+            } else {
+                output::write_view_to_stdout(format, config.color, &mut app.view, &app.theme)
+            }
         }
         output::ExecutionMode::Interactive { emit_on_exit } => {
             ui::terminal::TerminalSession::ensure_available()?;
@@ -198,6 +212,7 @@ fn prepare_app(
         &saved_source_options,
         &config.source_options,
     );
+    open_options.preview = config.top_lines.is_some();
     open_options.delimited = parse_options.clone();
     open_options.validate()?;
     if let Some(schema_status) = full_schema_scan_status(&source, &open_options) {
@@ -228,8 +243,12 @@ fn prepare_app(
         }
     }
     let opened = opened_source.into_implicit_table()?;
-    let mut view = view::TableView::from_opened_table(opened, view::Viewport::new(20, 8))?
-        .with_column_width_mode(config.width);
+    let viewport = view::Viewport::new(if config.top_lines.is_some() { 1 } else { 20 }, 8);
+    let mut view = view::TableView::from_opened_table(opened, viewport)?;
+    if config.top_lines.is_some() {
+        view.defer_preview_preparation();
+    }
+    view = view.with_column_width_mode(config.width);
     #[cfg(feature = "saved-views")]
     let saved_view = apply_saved_view(config, &mut view)?;
     #[cfg(feature = "saved-views")]
@@ -246,9 +265,11 @@ fn prepare_app(
             .map(|warning| format!("theme warning: {}: {}", warning.field, warning.message)),
     );
     let message = diagnostics.first().cloned();
-    view.goto_user_row(config.start_position.row.max(1));
-    if let Some(column) = config.start_position.column {
-        view.goto_user_column(column.max(1));
+    if config.top_lines.is_none() {
+        view.goto_user_row(config.start_position.row.max(1));
+        if let Some(column) = config.start_position.column {
+            view.goto_user_column(column.max(1));
+        }
     }
 
     Ok(Some(App {
@@ -2028,6 +2049,7 @@ fn apply_saved_view(
         .view
         .sort
         .iter()
+        .filter(|_| config.sorted != Some(false))
         .filter_map(|sort| {
             let column = view
                 .table_definition()
@@ -2094,7 +2116,11 @@ fn apply_saved_view(
     }
     if structured_schema_provisional {
         view.retain_pending_saved_operations(
-            selected.view.view.view.sort.clone(),
+            if config.sorted == Some(false) {
+                Vec::new()
+            } else {
+                selected.view.view.view.sort.clone()
+            },
             unresolved_filters,
         );
     }

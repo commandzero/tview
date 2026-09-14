@@ -1,3 +1,5 @@
+mod preview;
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -73,6 +75,9 @@ impl SourceAdapter for JsonAdapter {
                 mode: options.object_mode,
             }
             .into());
+        }
+        if options.preview {
+            return preview::open(source, self.format, options);
         }
         if let InputSource::StreamingStdin(input) = &source {
             return open_streaming_json(input.clone(), source.display_name(), self.format, options);

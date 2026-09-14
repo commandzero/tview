@@ -1,80 +1,4 @@
-## Purpose
-
-Define runtime/output-format selection, interactive transformation export, complete fixed-width table rendering, color policy, stream/error behavior, and source-neutral output adapter semantics.
-
-## Requirements
-
-### Requirement: Output mode resolution
-Tview SHALL resolve the independent `--interactive` flag and optional `--output <format>` before entering a terminal session. With neither option, terminal stdout SHALL select a view-only TUI and non-terminal stdout SHALL select immediate `table` output. `--interactive` alone SHALL select a view-only TUI. `--output <format>` alone SHALL select that batch adapter. Their combination SHALL run the TUI and serialize its final live view through that adapter on normal quit.
-
-#### Scenario: Terminal stdout remains automatically interactive
-- **WHEN** neither `--interactive` nor `--output` is supplied and stdout is a terminal
-- **THEN** Tview enters the interactive TUI using existing behavior
-
-#### Scenario: Redirected stdout selects table output
-- **WHEN** neither `--interactive` nor `--output` is supplied and stdout is redirected to a file
-- **THEN** Tview writes a non-interactive table to stdout without entering the TUI
-
-#### Scenario: Pipeline selects table output
-- **WHEN** neither `--interactive` nor `--output` is supplied and stdout is connected to another process
-- **THEN** Tview writes a non-interactive table to the pipe
-
-#### Scenario: Explicit table output to terminal
-- **WHEN** `--output table` is supplied without `--interactive` and stdout is a terminal
-- **THEN** Tview writes the table once and exits without entering the TUI
-
-#### Scenario: Interactive transform with redirected stdout
-- **WHEN** `--interactive --output table` is supplied, stdout is not a terminal, and a controlling terminal is available
-- **THEN** Tview runs the UI on the controlling terminal and reserves stdout for final table serialization
-
-#### Scenario: Interactive mode without a controlling terminal
-- **WHEN** `--interactive` is supplied, stdin/stdout are data streams, and no controlling terminal is available
-- **THEN** Tview fails before consuming input or entering raw mode, writes a clear diagnostic to stderr, and emits no stdout
-
-### Requirement: Explicit interactive transformation
-Combining `--interactive` with `--output <format>` SHALL treat the TUI as an interactive transformation stage. On normal quit, Tview SHALL restore the terminal, complete input ingestion and late schema resolution, freeze the final live view state, prepare the complete logical result, and serialize it through the selected output adapter to stdout. Interactive sessions without `--output` SHALL NOT serialize their final live state.
-
-#### Scenario: Live modifications control final output
-- **WHEN** a user combines `--interactive` with an output format, then hides columns, changes formats, filters rows, or changes sort order before normal quit
-- **THEN** stdout contains the complete final logical result with those live modifications applied
-
-#### Scenario: Screen state is excluded
-- **WHEN** an interactive transform has cursor, viewport, selection, popup, or search-highlight state at normal quit
-- **THEN** those screen-only details do not restrict or decorate the serialized result
-
-#### Scenario: Interactive mode without output does not export
-- **WHEN** automatic mode or explicit `--interactive` selects the TUI without `--output` and the user quits normally
-- **THEN** Tview restores the terminal and exits without serializing the final live view to stdout
-
-#### Scenario: Cancellation or failure does not export
-- **WHEN** an interactive transform is cancelled or fails during terminal use, ingestion, final preparation, or terminal restoration
-- **THEN** Tview emits no final table and exits according to the failure or cancellation contract
-
-### Requirement: Terminal and data channel separation
-When interactive input or output occupies standard streams, Tview SHALL use an available controlling terminal for UI events and drawing while reserving stdin for source bytes and stdout for serialized result bytes. UI control sequences, loading indicators, and screen content SHALL NOT be written to redirected stdout.
-
-#### Scenario: Provisional schema from piped stdin
-- **WHEN** interactive mode receives a non-seekable stdin source
-- **THEN** Tview buffers enough input to establish a provisional schema and display the table, then continues draining and materializing input while interaction proceeds
-
-#### Scenario: Quit completes finite input
-- **WHEN** the user normally quits an interactive transform before a finite stdin producer reaches EOF
-- **THEN** Tview completes ingestion and late-schema application before preparing and writing the final result
-
-#### Scenario: Terminal restored before output
-- **WHEN** an interactive transform quits normally
-- **THEN** raw mode and alternate-screen state are restored before the output adapter writes any final bytes
-
-### Requirement: Non-interactive execution path
-In any batch output format, Tview SHALL NOT enable raw mode, enter the alternate screen, draw loading/footer chrome, read terminal events, access the clipboard, or wait for user input.
-
-#### Scenario: Table mode has no terminal side effects
-- **WHEN** table output is selected
-- **THEN** source opening, view application, rendering, and process exit occur without constructing a terminal session
-
-#### Scenario: Piped stdin and stdout
-- **WHEN** input is read from stdin and table output is piped to another process
-- **THEN** Tview consumes stdin as data, writes the formatted table to stdout, and never attempts to read interactive input
+## MODIFIED Requirements
 
 ### Requirement: Complete configured logical result
 Batch output SHALL render the complete logical view after applying source options, the active bounded source result, and selected view configuration, including labels, column visibility and order, formats, widths, alignment, header visibility, view filters, view sort, null placement, and source-derived schema updates. Completion SHALL mean the entire active source result, not rows outside its configured source-query limit. Cursor position, viewport origin, selection styling, search state, and TUI-only start position SHALL NOT limit or decorate output. For direct table output with `--top-lines`, completion SHALL instead mean the selected preview prefix under the Table preview preparation requirement. Saved view sorting SHALL respect `--sorted`. All other output modes and invocations without a preview limit SHALL retain complete-result preparation.
@@ -100,14 +24,14 @@ Batch output SHALL render the complete logical view after applying source option
 - **THEN** the complete bounded logical result is emitted because start position is an interactive cursor setting
 
 #### Scenario: Late schema is included
-- **WHEN** an incremental source discovers additional columns while completing its active result
+- **WHEN** output has no preview limit and an incremental source discovers additional columns while completing its active result
 - **THEN** applicable saved configuration is resolved before final output layout
 
 ### Requirement: Stable complete-table widths
 Before writing the first table line, table output SHALL complete the active bounded source result and resolve one stable display width per visible column. It SHALL NOT cross a source-query limit to discover wider values. Explicit per-column widths SHALL be honored; otherwise each column SHALL expand to the widest normalized header or rendered value in that active result. For direct table output with `--top-lines`, automatic widths SHALL instead use only the emitted prefix and its header; lookahead and omitted rows SHALL NOT affect widths. Explicit widths SHALL still apply.
 
 #### Scenario: Later wide value affects initial lines
-- **WHEN** a value near the end of the active result is wider than earlier values
+- **WHEN** output has no preview limit and a value near the end of the active result is wider than earlier values
 - **THEN** the header and preceding rows use that final wider column width
 
 #### Scenario: Wider value lies beyond SQLite limit
@@ -157,48 +81,6 @@ Plain table output SHALL emit zero or more newline-terminated physical lines. Ea
 - **WHEN** a rendered cell contains newline, carriage-return, tab, escape, or another control character
 - **THEN** table mode replaces it with a visible escaped representation so one logical row remains one physical output line
 
-### Requirement: Non-interactive color policy
-Tview SHALL resolve color mode as `auto`, `always`, or `never`. In table output, `auto` and `never` SHALL emit no ANSI control sequences, while `always` SHALL emit ANSI styles derived from the resolved theme for headers, ordinary cells, and configured conditional cell colors.
-
-#### Scenario: Piped output is plain by default
-- **WHEN** table output uses default `auto` color mode
-- **THEN** stdout contains no ANSI escape sequences even if a theme defines colors
-
-#### Scenario: Color is explicitly enabled
-- **WHEN** table output uses color mode `always`
-- **THEN** emitted header and cell content uses theme-derived ANSI styling and resets styles before unstyled separators or line termination
-
-#### Scenario: Color is explicitly disabled
-- **WHEN** color mode is `never`
-- **THEN** no ANSI color or modifier sequence is written in either automatic or explicitly selected table output
-
-#### Scenario: Styling does not affect width
-- **WHEN** ANSI styling is enabled
-- **THEN** escape sequences do not contribute to clipping, alignment, or padding calculations
-
-### Requirement: Clean stdout and stderr contract
-Batch output and interactive final export SHALL reserve stdout for adapter bytes, write warnings and errors to stderr, return a nonzero status for failures other than downstream pipe closure, and treat `BrokenPipe` while writing stdout as a clean early termination without an additional diagnostic.
-
-#### Scenario: Saved-view warning does not corrupt table
-- **WHEN** saved-view or theme resolution produces a warning in table mode
-- **THEN** the warning is written to stderr and stdout contains only table output
-
-#### Scenario: Opening fails before output
-- **WHEN** source opening, view application, full traversal, or width profiling fails before the first line is written
-- **THEN** stdout remains empty, stderr describes the failure, and the process exits nonzero
-
-#### Scenario: Downstream consumer exits early
-- **WHEN** a command such as `head` closes the stdout pipe before all rows are written
-- **THEN** Tview stops writing and exits cleanly without printing a broken-pipe error
-
-#### Scenario: Other write failure
-- **WHEN** stdout writing fails for a reason other than `BrokenPipe`
-- **THEN** Tview reports the failure on stderr and exits nonzero
-
-#### Scenario: Same-file shell redirection is not supported
-- **WHEN** a caller redirects final output to the same pathname used as input
-- **THEN** safe in-place replacement is outside Tview's contract because the shell may truncate the file before process startup; documentation directs callers to a distinct destination and notes that fixed-width table output does not preserve CSV or JSON source format
-
 ### Requirement: Modular output adapters
 Tview SHALL dispatch each selected `OutputFormat` through a source-neutral output adapter in both direct and post-interactive lifecycles. Shared orchestration SHALL open the source, apply the saved or frozen live view, satisfy the adapter's declared preparation requirements, validate adapter capabilities, provide an immutable prepared projection, and own stdout, stderr, broken-pipe, and exit-status behavior. Format-specific adapters SHALL own only their layout, escaping, styling, and byte serialization rules. For direct table previews, shared orchestration SHALL prepare an immutable prefix projection and remaining-row metadata instead of requiring a complete projection. Source opening SHALL receive the preview policy before ingestion or saved-view preparation begins.
 
@@ -218,40 +100,6 @@ Tview SHALL dispatch each selected `OutputFormat` through a source-neutral outpu
 - **WHEN** an output option such as `--color always` is incompatible with the selected adapter
 - **THEN** Tview rejects the invocation before writing stdout with a clear diagnostic on stderr
 
-### Requirement: Supported-source conversion
-Every output adapter SHALL consume every compatible source format, including SQLite, through the shared table/view model rather than implementing source-specific exporters.
-
-#### Scenario: CSV to text table
-- **WHEN** a delimited input is rendered in table mode
-- **THEN** its source-defined columns and rows are emitted as fixed-width text
-
-#### Scenario: JSON to text table
-- **WHEN** a JSON array or keyed JSON object is rendered in table mode
-- **THEN** its resolved rows and columns use the same interpretation and saved-view rules as the TUI
-
-#### Scenario: SQLite to text table
-- **WHEN** a SQLite table is resolved and rendered in table mode
-- **THEN** the existing output adapter serializes its bounded transformed view without SQLite-specific formatting code
-
-### Requirement: Non-interactive SQLite table selection
-Direct batch execution SHALL auto-select a sole selectable SQLite ordinary table or compatible ordinary view and SHALL require explicit CLI or saved selection when multiple selectable candidates remain.
-
-#### Scenario: Sole table in batch mode
-- **WHEN** direct batch execution discovers exactly one selectable candidate and no table is requested
-- **THEN** it opens that candidate and emits its bounded view
-
-#### Scenario: Saved table in batch mode
-- **WHEN** direct batch execution discovers multiple selectable candidates and `source.table` resolves one
-- **THEN** it opens that table without waiting for input
-
-#### Scenario: Ambiguous batch database
-- **WHEN** direct batch execution discovers multiple selectable candidates without `--table` or saved `source.table`
-- **THEN** it writes no stdout, reports the candidates and required selection on stderr, and exits nonzero
-
-#### Scenario: Interactive export can select
-- **WHEN** `--interactive --output table` opens an ambiguous database
-- **THEN** the startup table picker resolves the table before interaction and final export uses that selected table
-
 ### Requirement: SQLite output query completion
 Direct and post-interactive output SHALL prepare the latest requested bounded SQLite source result before passing an immutable projection to the selected output adapter. For direct table previews, required traversal SHALL be limited to the prefix and lookahead needed after filtering and enabled sorting; the bounded query must still succeed before output. Preparation SHALL NOT fetch the rest solely for layout or row counting.
 
@@ -270,25 +118,6 @@ Direct and post-interactive output SHALL prepare the latest requested bounded SQ
 #### Scenario: Generated SQL stays out of adapter output
 - **WHEN** SQLite query provenance exists during normal table serialization
 - **THEN** stdout contains only the selected output adapter's bytes
-
-### Requirement: Non-interactive Elasticsearch target selection
-Direct Elasticsearch output SHALL require either a valid native query or an explicitly selected index or data stream and SHALL never display or wait for the interactive target picker.
-
-#### Scenario: Direct output with ES|QL
-- **WHEN** direct output opens Elasticsearch with `source.query`
-- **THEN** it executes the bounded query without performing interactive target selection
-
-#### Scenario: Direct output with selected target
-- **WHEN** direct output opens Elasticsearch with `source.table`
-- **THEN** it validates the index or data stream and executes the generated bounded `FROM` query
-
-#### Scenario: Direct output without query or target
-- **WHEN** direct Elasticsearch output has neither `source.query` nor `source.table`
-- **THEN** it writes no stdout, reports that `--query` or `--table` is required, and exits nonzero
-
-#### Scenario: Interactive export may select target
-- **WHEN** `--interactive --output table` opens Elasticsearch without a query or target
-- **THEN** the startup picker resolves an index or data stream before table interaction and final export
 
 ### Requirement: Elasticsearch output query completion
 Direct and post-interactive output SHALL await the latest required bounded Elasticsearch query and complete its active result before passing a source-neutral immutable projection to the selected output adapter. For direct table previews, the query response must still succeed, but local projection and profiling SHALL cover only the selected prefix and required lookahead. The native adapter may receive a complete bounded response; previews SHALL NOT expand its source limit or issue an extra query solely to count omitted rows.
@@ -312,6 +141,8 @@ Direct and post-interactive output SHALL await the latest required bounded Elast
 #### Scenario: Native query stays out of output
 - **WHEN** ES|QL provenance exists during normal table serialization
 - **THEN** stdout contains only the selected output adapter's bytes
+
+## ADDED Requirements
 
 ### Requirement: Table preview preparation
 Direct table output with `--top-lines N` SHALL emit the first N rows of the effective result, applying source operations and limits, then view filters, then enabled view sorting, before selecting the prefix. Without enabled local sorting or a full-schema request, file preview preparation SHALL stop after N matching rows and at most one additional matching row, with bounded parser read-ahead. It SHALL NOT complete ingestion, indexing, schema scanning, width profiling, color profiling, or row counting solely to prepare a preview. This behavior SHALL apply regardless of file size and to stdin. Filters and locating selected nested data may require scanning more input. Enabled sorting SHALL retain exact whole-result semantics even when it requires full traversal.
@@ -359,7 +190,7 @@ Default schema and type discovery SHALL use the selected rows and required bound
 - **THEN** Tview does not read that suffix merely to validate the whole source
 
 ### Requirement: Preview remaining-row summary
-A truncated table preview SHALL append one newline-terminated, unstyled stdout line. If the exact effective filtered result count T is already available, the line SHALL be `<T - emitted> more rows...`. If another matching row is confirmed but the exact count is unknown, the line SHALL be `more rows...`. Tview SHALL NOT scan the remaining input or issue a separate count query just to obtain a numeric summary, and SHALL NOT substitute an unfiltered or estimated count. If no result rows are omitted, no summary SHALL be emitted. The header and summary SHALL NOT count toward N. Existing escaping SHALL keep each logical data row on one physical output line.
+A truncated table preview SHALL append one newline-terminated, unstyled stdout line. If the exact effective filtered result count T is already available, the line SHALL be `<T - emitted> more rows...`. If another matching row is confirmed but the exact count is unknown, the line SHALL be `more rows...`. Tview SHALL NOT scan the remaining input or issue a separate count query just to obtain a numeric summary, and SHALL NOT substitute an unfiltered or estimated count. If no result rows are omitted, no summary SHALL be emitted. The header and summary SHALL NOT count toward N. Existing escaping SHALL keep each logical data row on one physical line.
 
 #### Scenario: Known remainder
 - **WHEN** an effective result has exactly 125 rows and a preview emits 30
@@ -380,48 +211,3 @@ A truncated table preview SHALL append one newline-terminated, unstyled stdout l
 #### Scenario: Multiline cells and header
 - **WHEN** `-n 2` previews quoted multiline CSV records with a visible header and additional rows
 - **THEN** output has one header line, two escaped data lines, and one summary line
-
-### Requirement: Elasticsearch source-neutral conversion
-Every output adapter SHALL consume Elasticsearch results through the shared table/view model rather than implementing Elasticsearch-specific serialization.
-
-#### Scenario: ES|QL to text table
-- **WHEN** an ES|QL result is rendered in table mode
-- **THEN** its bounded typed rows, resolved columns, and local view configuration use the existing fixed-width output adapter
-
-#### Scenario: Multivalued output cell
-- **WHEN** an ES|QL result contains a structured multivalued cell
-- **THEN** the selected output adapter renders it through the shared structured-cell representation without fetching the source again
-
-### Requirement: Structured display export
-The system SHALL support explicit `--output json` and `--output jsonl` without changing automatic terminal detection or default table output. Both formats SHALL serialize complete projected display strings without clipping, padding, control replacement, or ANSI styling.
-
-#### Scenario: JSON document
-- **WHEN** JSON output completes successfully
-- **THEN** stdout contains one newline-terminated object with ordered string `columns` and string-array `rows`
-
-#### Scenario: JSONL records
-- **WHEN** JSONL output completes successfully
-- **THEN** each row produces one newline-terminated object with ordered string `columns` and string-array `values`
-
-#### Scenario: Duplicate or absent labels
-- **WHEN** labels repeat or the header is hidden or absent
-- **THEN** positional values retain their order and columns is empty only for the hidden or absent header
-
-#### Scenario: Empty result
-- **WHEN** there are no visible rows
-- **THEN** JSON emits an empty rows array and JSONL emits zero records
-
-#### Scenario: Controls and late schema
-- **WHEN** cells contain control characters or later input adds columns
-- **THEN** serialization escapes controls and uses the completed schema for every record
-
-#### Scenario: Styling and failures
-- **WHEN** forced ANSI is requested or source preparation fails
-- **THEN** structured output fails with empty stdout; broken pipes remain clean exits and other write failures may leave partial bytes
-
-### Requirement: CLI version identification
-The executable SHALL expose its manifest version through `--version` without requiring an input source.
-
-#### Scenario: Print version
-- **WHEN** the user invokes `tview --version`
-- **THEN** stdout contains `tview` and the package version followed by a newline and the process exits with status zero

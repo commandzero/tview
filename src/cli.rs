@@ -37,6 +37,14 @@ pub struct Args {
     #[arg(short = 'o', long = "output", value_enum)]
     pub output: Option<OutputFormat>,
 
+    /// Apply saved view sorting for direct table output [default: true].
+    #[arg(long, action = ArgAction::Set)]
+    pub sorted: Option<bool>,
+
+    /// Preview at most this many data rows, excluding the header and summary.
+    #[arg(short = 'n', long = "top-lines")]
+    pub top_lines: Option<std::num::NonZeroUsize>,
+
     /// Color policy for serialized output.
     #[arg(long = "color", value_enum, default_value_t = ColorOutput::Auto)]
     pub color: ColorOutput,
@@ -122,6 +130,8 @@ pub struct Config {
     pub interactive: bool,
     pub output: Option<OutputFormat>,
     pub color: ColorOutput,
+    pub sorted: Option<bool>,
+    pub top_lines: Option<std::num::NonZeroUsize>,
     pub encoding: Option<String>,
     pub delimiter: Option<u8>,
     pub quoting: Option<Quoting>,
@@ -211,6 +221,8 @@ impl Config {
             interactive: args.interactive,
             output: args.output,
             color: args.color,
+            sorted: args.sorted,
+            top_lines: args.top_lines,
             encoding: args.encoding,
             delimiter: args.delimiter.as_deref().map(parse_byte_char).transpose()?,
             quoting: args.quoting.as_deref().map(parse_quoting).transpose()?,
@@ -436,6 +448,28 @@ fn parse_char(value: &str, what: &'static str) -> Result<char, CliError> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn preview_options_require_explicit_valid_values() {
+        for args in [
+            vec!["tview", "--sorted", "data.csv"],
+            vec!["tview", "--sorted", "yes", "data.csv"],
+            vec!["tview", "-n", "0", "data.csv"],
+            vec!["tview", "-n", "-1", "data.csv"],
+            vec!["tview", "-n", "1.5", "data.csv"],
+            vec!["tview", "-n", "99999999999999999999999999", "data.csv"],
+            vec!["tview", "data.csv", "-n"],
+        ] {
+            assert!(Args::try_parse_from(args).is_err());
+        }
+        for flag in ["-n", "--top-lines"] {
+            let config = parse(&["tview", "--sorted", "false", flag, "30", "data.csv"]);
+            assert_eq!(config.sorted, Some(false));
+            assert_eq!(config.top_lines.unwrap().get(), 30);
+        }
+        assert_eq!(parse(&["tview", "data.csv"]).sorted, None);
+        assert_eq!(parse(&["tview", "data.csv"]).top_lines, None);
+    }
 
     fn parse(args: &[&str]) -> Config {
         let args = Args::try_parse_from(args).expect("parse args");

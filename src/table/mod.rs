@@ -1,3 +1,5 @@
+mod preview;
+pub(crate) use preview::PreviewSourceStore;
 mod executor;
 mod model;
 mod query;
@@ -43,9 +45,20 @@ pub struct SourceFieldMetadata {
 }
 
 pub trait TableStore: Send {
+    /// Columns explicitly present in a structured source row, before null padding.
+    fn present_columns(&self, _row: RowId) -> Option<Vec<usize>> {
+        None
+    }
+
     fn generation(&self) -> SourceGeneration;
     fn row_count(&self) -> RowCount;
     fn column_count(&self) -> usize;
+    fn initial_schema_column_count(&self) -> usize {
+        self.column_count()
+    }
+    fn is_live_input(&self) -> bool {
+        false
+    }
     fn row(&mut self, index: RowIndex) -> anyhow::Result<Option<Row>>;
     fn ensure_indexed_through(&mut self, index: RowIndex) -> anyhow::Result<IndexProgress>;
     fn index_and_scan_rows(
@@ -69,6 +82,9 @@ pub trait TableStore: Send {
     }
     fn active_source_query(&self) -> Option<&SourceQuery> {
         None
+    }
+    fn has_source_filters(&self) -> bool {
+        false
     }
     fn execute_source_query(
         &mut self,
@@ -749,6 +765,10 @@ impl TableStore for FileSourceQueryStore {
 
     fn active_source_query(&self) -> Option<&SourceQuery> {
         Some(&self.active_query)
+    }
+
+    fn has_source_filters(&self) -> bool {
+        !self.active_query.filters.is_empty()
     }
 
     fn execute_source_query(

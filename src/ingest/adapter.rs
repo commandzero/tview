@@ -329,10 +329,16 @@ fn apply_file_source_query(
             let scope = if request.column == "*" {
                 crate::table::SourceFilterScope::WholeRecord
             } else {
-                crate::table::SourceFilterScope::Column(resolve_source_column(
-                    &definition,
-                    &request.column,
-                )?)
+                crate::table::SourceFilterScope::Column(if options.preview {
+                    resolve_source_column(&definition, &request.column).unwrap_or(
+                        crate::table::ColumnId {
+                            generation: definition.generation,
+                            ordinal: u32::MAX,
+                        },
+                    )
+                } else {
+                    resolve_source_column(&definition, &request.column)?
+                })
             };
             Ok(crate::table::SourceFilter {
                 scope,
@@ -356,7 +362,21 @@ fn apply_file_source_query(
         Vec::new(),
     ));
     let base = std::mem::replace(&mut table.store, placeholder);
-    table.store = if options.limit.is_none()
+    table.store = if options.preview {
+        let exposed_column_count = if options.source_filters.is_empty() {
+            definition.columns.len()
+        } else {
+            base.initial_schema_column_count()
+        };
+        table.definition.columns.truncate(exposed_column_count);
+        Box::new(crate::table::PreviewSourceStore::new(
+            base,
+            definition,
+            query,
+            options.source_filters.clone(),
+            exposed_column_count,
+        )?)
+    } else if options.limit.is_none()
         && options.source_filters.is_empty()
         && options.source_sort.is_empty()
     {

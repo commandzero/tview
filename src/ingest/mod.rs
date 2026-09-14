@@ -367,6 +367,34 @@ pub fn pad_rows(mut rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
 }
 
 #[cfg(test)]
+pub(crate) struct CountingReader<R> {
+    inner: R,
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+#[cfg(test)]
+impl<R> CountingReader<R> {
+    pub(crate) fn new(inner: R) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Self {
+                inner,
+                count: count.clone(),
+            },
+            count,
+        )
+    }
+}
+#[cfg(test)]
+impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.count
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

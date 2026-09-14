@@ -1,3 +1,5 @@
+mod preview;
+
 use crate::table::{
     CellValue, ColumnDefinition, ColumnId, ColumnSourceIdentity, InMemoryTable, IndexProgress,
     LazyFileTable, LogicalType, OffsetTableStore, RelationMetadata, Row, RowCount, RowIndex,
@@ -33,6 +35,9 @@ impl SourceAdapter for DelimitedAdapter {
 
     fn open(&self, source: InputSource, options: &OpenOptions) -> anyhow::Result<OpenedSource> {
         options.validate()?;
+        if options.preview {
+            return preview::open(source, options);
+        }
         if let InputSource::StreamingStdin(input) = &source {
             return open_streaming_delimited(input.clone(), source.display_name(), options);
         }

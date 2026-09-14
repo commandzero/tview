@@ -303,6 +303,8 @@ pub struct OpenOptions {
     pub limit: Option<NonZeroUsize>,
     pub source_filters: Vec<SourceFilterRequest>,
     pub source_sort: Vec<SourceSortRequest>,
+    /// Prepare rows incrementally for a direct table preview.
+    pub preview: bool,
     pub lazy_threshold_bytes: u64,
     pub schema_scan_bytes: u64,
 }
@@ -321,6 +323,7 @@ impl Default for OpenOptions {
             limit: None,
             source_filters: Vec::new(),
             source_sort: Vec::new(),
+            preview: false,
             lazy_threshold_bytes: super::DEFAULT_LAZY_THRESHOLD_BYTES,
             schema_scan_bytes: DEFAULT_SCHEMA_SCAN_BYTES,
         }
