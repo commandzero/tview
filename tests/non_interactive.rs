@@ -961,6 +961,55 @@ fn preview_source_filters_do_not_expose_rejected_schema_columns_when_empty() {
 
 #[cfg(feature = "saved-views")]
 #[test]
+fn preview_source_filters_expose_columns_from_accepted_rows() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("filtered.yml"),
+        "name: filtered\nfilenames: ['*']\nsource:\n  filters:\n    - {column: id, operator: equal, value: '2'}\nview: {}\n",
+    )
+    .unwrap();
+    let file = fixture("id,name\n0,ignored,rejected\n2,kept,accepted\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "filtered", "--schema-scan", "full", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("id  name  Column 3\n 2  kept  accepted\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_view_filters_do_not_expose_rejected_schema_columns() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("filtered.yml"),
+        "name: filtered\nfilenames: ['*']\nsource: {}\nview:\n  filters:\n    - {column: keep, action: in, kind: text, condition: yes}\n",
+    )
+    .unwrap();
+    let file = fixture(
+        r#"[{"keep":"yes","id":1},{"keep":"no","late":"rejected"}]"#,
+        ".json",
+    );
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "filtered", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("keep  id\nyes    1\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
 fn preview_source_limit_reports_exact_remainder() {
     let config = tempfile::tempdir().unwrap();
     let views = config.path().join("tview/views");

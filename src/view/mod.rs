@@ -1172,6 +1172,17 @@ impl TableView {
         if delta.is_empty() {
             #[cfg(feature = "saved-views")]
             if delta.completed {
+                if !self.pending_saved_columns.is_empty() {
+                    self.source_status = Some(format!(
+                        "Saved view columns not found: {}",
+                        self.pending_saved_columns
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    self.pending_saved_columns.clear();
+                }
                 self.apply_pending_saved_operations(true);
             }
             return Ok(());
@@ -2502,7 +2513,8 @@ impl TableView {
                 .incremental_store
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
-            if full_schema {
+            let defer_schema_for_filter = !self.filters.is_empty();
+            if full_schema && !defer_schema_for_filter {
                 let progress = shared
                     .0
                     .borrow_mut()
@@ -2516,6 +2528,7 @@ impl TableView {
             let mut matched_total: usize = 0;
             let mut prefix_state = None;
             let mut deferred_until = None;
+            let mut deferred_schema_delta = crate::table::SchemaDelta::default();
             loop {
                 // Retain the emitted schema while lookahead checks later matching rows.
                 if selected.len() == limit && prefix_state.is_none() {
@@ -2527,7 +2540,16 @@ impl TableView {
                     .0
                     .borrow_mut()
                     .ensure_indexed_through(RowIndex(index))?;
-                self.apply_source_schema_delta(progress.schema_delta)?;
+                let schema_checkpoint = defer_schema_for_filter.then(|| self.clone());
+                let mut schema_delta = std::mem::take(&mut deferred_schema_delta);
+                schema_delta
+                    .added_columns
+                    .extend(progress.schema_delta.added_columns);
+                schema_delta
+                    .widened_types
+                    .extend(progress.schema_delta.widened_types);
+                schema_delta.completed |= progress.schema_delta.completed;
+                self.apply_source_schema_delta(schema_delta.clone())?;
                 #[cfg(feature = "saved-views")]
                 let pending_resolved = pending_before && self.pending_saved_filters.is_empty();
                 #[cfg(not(feature = "saved-views"))]
@@ -2555,6 +2577,9 @@ impl TableView {
                     }
                 }
                 let Some(row) = shared.0.borrow_mut().row(RowIndex(index))? else {
+                    if let Some(checkpoint) = schema_checkpoint {
+                        *self = checkpoint;
+                    }
                     break;
                 };
                 index += 1;
@@ -2565,6 +2590,7 @@ impl TableView {
                     continue;
                 }
                 if self.row_passes_filters(&cells) {
+                    deferred_schema_delta = crate::table::SchemaDelta::default();
                     matched_total += 1;
                     if selected.len() == limit {
                         more = true;
@@ -2572,6 +2598,9 @@ impl TableView {
                     }
                     ids.push(row.id);
                     selected.push(cells);
+                } else if let Some(checkpoint) = schema_checkpoint {
+                    *self = checkpoint;
+                    deferred_schema_delta = schema_delta;
                 }
             }
             let count = shared.0.borrow().row_count();

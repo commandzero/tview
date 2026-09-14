@@ -185,6 +185,7 @@ impl Records {
 struct SequentialDelimited {
     records: Records,
     definition: TableDefinition,
+    initial_schema_column_count: usize,
     rows: Vec<Row>,
     eof: bool,
 }
@@ -271,12 +272,13 @@ fn open_reader(
     // follow-up sample. Replay every sampled line so preview parsing sees the same input.
     let mut sample = String::new();
     decoded.read_line(&mut sample)?;
-    if options.delimited.delimiter.is_none()
-        && sample
-            .lines()
-            .next()
-            .is_none_or(|line| line.trim().is_empty() || line.trim_start().starts_with(['#', '%']))
-    {
+    let first_line_needs_followup = sample
+        .lines()
+        .next()
+        .is_none_or(|line| line.trim().is_empty() || line.trim_start().starts_with(['#', '%']));
+    let path_needs_followup =
+        matches!(&source, InputSource::Path(_)) && sniff_delimiter(&sample).is_none();
+    if options.delimited.delimiter.is_none() && (first_line_needs_followup || path_needs_followup) {
         let mut line = String::new();
         for _ in 0..3 {
             if sample.len() >= 8192 {
@@ -338,9 +340,11 @@ fn open_reader(
         .collect::<Vec<_>>();
     let (mut definition, _) =
         delimited_definition(generation, &definition_sample, source.display_name());
-    if !options.source_filters.is_empty() && header_rows == 1 {
-        definition.columns.truncate(header_column_count);
-    }
+    let initial_schema_column_count = if header_rows == 1 {
+        header_column_count
+    } else {
+        definition.columns.len()
+    };
     definition.schema_state = SchemaState::Provisional;
     let seed_end = header_rows.saturating_add(1).min(sample.len());
     records.prepend(sample.iter().skip(seed_end).cloned());
@@ -362,6 +366,7 @@ fn open_reader(
     let mut store = SequentialDelimited {
         records,
         definition: definition.clone(),
+        initial_schema_column_count,
         rows,
         eof: false,
     };
@@ -393,6 +398,9 @@ impl TableStore for SequentialDelimited {
     }
     fn column_count(&self) -> usize {
         self.definition.columns.len()
+    }
+    fn initial_schema_column_count(&self) -> usize {
+        self.initial_schema_column_count
     }
     fn row_count(&self) -> RowCount {
         if self.eof {

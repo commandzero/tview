@@ -18,6 +18,7 @@ impl PreviewSourceStore {
         definition: TableDefinition,
         mut query: SourceQuery,
         requests: Vec<crate::ingest::SourceFilterRequest>,
+        exposed_column_count: usize,
     ) -> anyhow::Result<Self> {
         query.filters.retain(|filter| !matches!(filter.scope, SourceFilterScope::Column(column) if column.ordinal == u32::MAX));
         validate_source_query(&definition, &query)?;
@@ -34,7 +35,6 @@ impl PreviewSourceStore {
                 "source sorting is unavailable for streaming delimited and structured files"
             );
         }
-        let exposed_column_count = definition.columns.len();
         Ok(Self {
             base,
             definition,

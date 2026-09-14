@@ -363,11 +363,18 @@ fn apply_file_source_query(
     ));
     let base = std::mem::replace(&mut table.store, placeholder);
     table.store = if options.preview {
+        let exposed_column_count = if options.source_filters.is_empty() {
+            definition.columns.len()
+        } else {
+            base.initial_schema_column_count()
+        };
+        table.definition.columns.truncate(exposed_column_count);
         Box::new(crate::table::PreviewSourceStore::new(
             base,
-            table.definition.clone(),
+            definition,
             query,
             options.source_filters.clone(),
+            exposed_column_count,
         )?)
     } else if options.limit.is_none()
         && options.source_filters.is_empty()

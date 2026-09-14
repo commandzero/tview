@@ -340,6 +340,9 @@ impl TableStore for SequentialJson {
     fn column_count(&self) -> usize {
         self.schema.columns.len()
     }
+    fn initial_schema_column_count(&self) -> usize {
+        0
+    }
     fn row_count(&self) -> RowCount {
         if self.eof && self.pending.is_empty() {
             RowCount::Exact(self.rows.len())

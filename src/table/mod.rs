@@ -53,6 +53,9 @@ pub trait TableStore: Send {
     fn generation(&self) -> SourceGeneration;
     fn row_count(&self) -> RowCount;
     fn column_count(&self) -> usize;
+    fn initial_schema_column_count(&self) -> usize {
+        self.column_count()
+    }
     fn row(&mut self, index: RowIndex) -> anyhow::Result<Option<Row>>;
     fn ensure_indexed_through(&mut self, index: RowIndex) -> anyhow::Result<IndexProgress>;
     fn index_and_scan_rows(
