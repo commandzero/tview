@@ -244,16 +244,24 @@ fn open_reader(
     let mut warnings = Vec::new();
     if matches!(store.shape, Shape::Entries) {
         let mut sample = Vec::new();
+        let mut detection_incomplete = false;
         if options.object_mode == ObjectMode::Auto {
             let mut bytes = 0;
             let max_entries = if options.preview {
-                2
+                3
             } else {
                 OBJECT_DETECTION_MAX_ENTRIES
             };
             while sample.len() < max_entries && bytes < OBJECT_DETECTION_MAX_BYTES {
-                let Some(entry) = store.next_entry()? else {
-                    break;
+                let entry = match store.next_entry() {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => break,
+                    Err(error) if options.preview => {
+                        detection_incomplete = true;
+                        let _ = error;
+                        break;
+                    }
+                    Err(error) => return Err(error),
                 };
                 bytes += entry.encoded_len();
                 sample.push(entry);
@@ -264,7 +272,7 @@ fn open_reader(
             options.object_mode,
             options.object_mode_origin,
             options.object_mode == ObjectMode::Auto
-                && detect_keyed_object_with_minimum(&sample, 2)?,
+                && (detection_incomplete || detect_keyed_object(&sample)?),
         )?;
         object_mode = resolution.object_mode;
         if resolution.table_shape == Some(SelectedTableShape::ObjectRecord) {

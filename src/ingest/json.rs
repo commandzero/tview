@@ -261,11 +261,7 @@ fn detection_sample(entries: &[RawObjectEntry]) -> anyhow::Result<Vec<Value>> {
 }
 
 fn values_are_keyed_object(sampled: &[Value]) -> bool {
-    values_are_keyed_object_with_minimum(sampled, 3)
-}
-
-fn values_are_keyed_object_with_minimum(sampled: &[Value], minimum: usize) -> bool {
-    if sampled.len() < minimum || !sampled.iter().all(Value::is_object) {
+    if sampled.len() < 3 || !sampled.iter().all(Value::is_object) {
         return false;
     }
     let mut counts = HashMap::<(String, JsonValueKind), usize>::new();
@@ -285,16 +281,6 @@ fn values_are_keyed_object_with_minimum(sampled: &[Value], minimum: usize) -> bo
 
 fn detect_keyed_object(entries: &[RawObjectEntry]) -> anyhow::Result<bool> {
     Ok(values_are_keyed_object(&detection_sample(entries)?))
-}
-
-fn detect_keyed_object_with_minimum(
-    entries: &[RawObjectEntry],
-    minimum: usize,
-) -> anyhow::Result<bool> {
-    Ok(values_are_keyed_object_with_minimum(
-        &detection_sample(entries)?,
-        minimum,
-    ))
 }
 
 fn flatten_object_record(entries: &[RawObjectEntry]) -> anyhow::Result<FlatRow> {

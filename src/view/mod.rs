@@ -2514,7 +2514,7 @@ impl TableView {
             let mut index = 0;
             let mut more = false;
             let mut prefix_state = None;
-            let mut deferred: Vec<(crate::table::RowId, Vec<String>)> = Vec::new();
+            let mut deferred_until = None;
             loop {
                 // Retain the emitted schema while lookahead checks later matching rows.
                 if selected.len() == limit && prefix_state.is_none() {
@@ -2532,7 +2532,13 @@ impl TableView {
                 #[cfg(not(feature = "saved-views"))]
                 let pending_resolved = false;
                 if pending_resolved {
-                    for (row_id, cells) in deferred.drain(..) {
+                    let deferred_end = deferred_until.take().unwrap_or_default();
+                    for deferred_index in 0..deferred_end {
+                        let Some(row) = shared.0.borrow_mut().row(RowIndex(deferred_index))? else {
+                            break;
+                        };
+                        let row_id = row.id;
+                        let cells = row.display_cells();
                         if self.row_passes_filters(&cells) {
                             if selected.len() == limit {
                                 more = true;
@@ -2553,7 +2559,7 @@ impl TableView {
                 let cells = row.display_cells();
                 #[cfg(feature = "saved-views")]
                 if !self.pending_saved_filters.is_empty() {
-                    deferred.push((row.id, cells));
+                    deferred_until = Some(index);
                     continue;
                 }
                 if self.row_passes_filters(&cells) {
