@@ -1010,6 +1010,64 @@ fn preview_view_filters_do_not_expose_rejected_schema_columns() {
 
 #[cfg(feature = "saved-views")]
 #[test]
+fn preview_view_filters_with_no_matches_do_not_render_initial_schema() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("filtered.yml"),
+        "name: filtered\nfilenames: ['*']\nsource: {}\nview:\n  filters:\n    - {column: keep, action: in, kind: text, condition: yes}\n",
+    )
+    .unwrap();
+    let file = fixture(r#"[{"keep":"no","late":"rejected"}]"#, ".json");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "filtered", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_view_filters_full_schema_keeps_late_accepted_fields() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("filtered.yml"),
+        "name: filtered\nfilenames: ['*']\nsource: {}\nview:\n  filters:\n    - {column: keep, action: in, kind: text, condition: yes}\n",
+    )
+    .unwrap();
+    let file = fixture(
+        r#"[{"keep":"yes","id":1},{"keep":"yes","late":"accepted"},{"keep":"no","rejected":true}]"#,
+        ".json",
+    );
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args([
+            "--view",
+            "filtered",
+            "--schema-scan",
+            "full",
+            "--sorted",
+            "false",
+            "-n",
+            "1",
+        ])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("keep  id  late\nyes    1\n1 more rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
 fn preview_source_limit_reports_exact_remainder() {
     let config = tempfile::tempdir().unwrap();
     let views = config.path().join("tview/views");

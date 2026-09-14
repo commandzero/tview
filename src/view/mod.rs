@@ -2475,6 +2475,7 @@ impl TableView {
         #[cfg(feature = "saved-views")]
         let has_sort = has_sort || !self.pending_saved_sorts.is_empty();
         let remaining;
+        let mut schema_row_ids = Vec::new();
         if materialize_before_filtering || has_sort {
             // Discover the full sorting schema before a query store consumes its deltas.
             if let Some(shared) = self.incremental_store.clone() {
@@ -2513,14 +2514,16 @@ impl TableView {
                 .incremental_store
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
-            let defer_schema_for_filter = !self.filters.is_empty();
-            if full_schema && !defer_schema_for_filter {
-                let progress = shared
-                    .0
-                    .borrow_mut()
-                    .ensure_indexed_through(RowIndex(usize::MAX))?;
-                self.apply_source_schema_delta(progress.schema_delta)?;
-            }
+            let defer_schema_for_filter = full_schema || !self.filters.is_empty() || {
+                #[cfg(feature = "saved-views")]
+                {
+                    !self.pending_saved_filters.is_empty()
+                }
+                #[cfg(not(feature = "saved-views"))]
+                {
+                    false
+                }
+            };
             let mut selected: Vec<Vec<String>> = Vec::new();
             let mut ids = Vec::new();
             let mut index = 0;
@@ -2531,7 +2534,7 @@ impl TableView {
             let mut deferred_schema_delta = crate::table::SchemaDelta::default();
             loop {
                 // Retain the emitted schema while lookahead checks later matching rows.
-                if selected.len() == limit && prefix_state.is_none() {
+                if !full_schema && selected.len() == limit && prefix_state.is_none() {
                     prefix_state = Some(self.clone());
                 }
                 #[cfg(feature = "saved-views")]
@@ -2563,6 +2566,7 @@ impl TableView {
                         let row_id = row.id;
                         let cells = row.display_cells();
                         if self.row_passes_filters(&cells) {
+                            schema_row_ids.push(row_id);
                             matched_total += 1;
                             if selected.len() == limit {
                                 more = true;
@@ -2572,7 +2576,7 @@ impl TableView {
                             selected.push(cells);
                         }
                     }
-                    if more {
+                    if more && !full_schema {
                         break;
                     }
                 }
@@ -2591,13 +2595,17 @@ impl TableView {
                 }
                 if self.row_passes_filters(&cells) {
                     deferred_schema_delta = crate::table::SchemaDelta::default();
+                    schema_row_ids.push(row.id);
                     matched_total += 1;
                     if selected.len() == limit {
                         more = true;
-                        break;
+                        if !full_schema {
+                            break;
+                        }
+                    } else {
+                        ids.push(row.id);
+                        selected.push(cells);
                     }
-                    ids.push(row.id);
-                    selected.push(cells);
                 } else if let Some(checkpoint) = schema_checkpoint {
                     *self = checkpoint;
                     deferred_schema_delta = schema_delta;
@@ -2621,8 +2629,10 @@ impl TableView {
             } else {
                 None
             };
-            if let Some(prefix) = prefix_state {
-                *self = prefix;
+            if !full_schema {
+                if let Some(prefix) = prefix_state {
+                    *self = prefix;
+                }
             }
             self.rows = selected;
             self.row_ids = ids;
@@ -2634,35 +2644,33 @@ impl TableView {
                     .active_source_query()
                     .is_some_and(|query| !query.filters.is_empty())
         });
-        if (!full_schema || source_filter_active) && !self.row_ids.is_empty() {
+        let needs_present_mask = !full_schema || source_filter_active || !self.filters.is_empty();
+        if needs_present_mask {
             if let Some(shared) = &self.incremental_store {
-                let mut store = shared.0.borrow_mut();
-                let row_ids = if full_schema && source_filter_active {
-                    let mut row_ids = Vec::new();
-                    store.scan_rows(
-                        crate::table::ScanRequest {
-                            start: RowIndex(0),
-                            direction: crate::table::ScanDirection::Forward,
-                            max_rows: usize::MAX,
-                        },
-                        &mut |_, row: &crate::table::Row| {
-                            row_ids.push(row.id);
-                            std::ops::ControlFlow::Continue(())
-                        },
-                    )?;
-                    row_ids
+                let store = shared.0.borrow_mut();
+                let row_ids = if full_schema && (source_filter_active || !self.filters.is_empty()) {
+                    if schema_row_ids.is_empty() {
+                        self.row_ids.clone()
+                    } else {
+                        schema_row_ids
+                    }
                 } else {
                     self.row_ids.clone()
                 };
-                let present = row_ids
-                    .iter()
-                    .map(|id| store.present_columns(*id))
-                    .collect::<Option<Vec<_>>>();
-                if let Some(present) = present {
-                    let present = present.into_iter().flatten().collect::<BTreeSet<_>>();
-                    self.hidden_columns.extend(
-                        (0..self.source_column_count()).filter(|column| !present.contains(column)),
-                    );
+                if row_ids.is_empty() && !self.filters.is_empty() && !source_filter_active {
+                    self.hidden_columns.extend(0..self.source_column_count());
+                } else if !row_ids.is_empty() {
+                    let present = row_ids
+                        .iter()
+                        .map(|id| store.present_columns(*id))
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(present) = present {
+                        let present = present.into_iter().flatten().collect::<BTreeSet<_>>();
+                        self.hidden_columns.extend(
+                            (0..self.source_column_count())
+                                .filter(|column| !present.contains(column)),
+                        );
+                    }
                 }
             }
         }
