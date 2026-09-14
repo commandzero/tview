@@ -2498,6 +2498,7 @@ impl TableView {
             self.preview_preparing = false;
             self.apply_query_configuration();
             self.complete_for_output_without_refresh(false)?;
+            schema_row_ids = self.row_ids.clone();
             let total = self.rows.len();
             self.rows.truncate(limit);
             self.row_ids.truncate(limit);

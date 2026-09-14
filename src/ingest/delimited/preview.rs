@@ -343,7 +343,7 @@ fn open_reader(
     let initial_schema_column_count = if header_rows == 1 {
         header_column_count
     } else {
-        definition.columns.len()
+        0
     };
     definition.schema_state = SchemaState::Provisional;
     let seed_end = header_rows.saturating_add(1).min(sample.len());
