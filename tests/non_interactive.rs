@@ -1322,7 +1322,10 @@ fn preview_saved_content_width_uses_selected_rows() {
 
 #[test]
 fn preview_keyed_object_auto_stops_before_malformed_suffix() {
-    let file = fixture(r#"{"a":{"id":1},"b":{"id":2},invalid}"#, ".json");
+    let file = fixture(
+        r#"{"a":{"id":1},"b":{"id":2},"c":{"id":3},invalid}"#,
+        ".json",
+    );
 
     tview_command()
         .args([
@@ -1443,4 +1446,135 @@ fn sorted_json_preview_profiles_only_selected_rows() {
         .success()
         .stdout("a  winner\n9  yes\n2 more rows...\n")
         .stderr("");
+}
+
+#[test]
+fn preview_stdin_exact_boundary_waits_for_eof() {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+    for (format, input, expected) in [
+        ("delimited", "A\n1\n2\n", "A\n1\n2\n"),
+        ("ndjson", "{\"a\":1}\n{\"a\":2}\n", "a\n1\n2\n"),
+    ] {
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("tview"))
+            .env("XDG_CONFIG_HOME", tempfile::tempdir().unwrap().path())
+            .args(["--format", format, "--sorted", "false", "-n", "2", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut pipe = child.stdin.take().unwrap();
+        pipe.write_all(input.as_bytes()).unwrap();
+        pipe.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "premature {format} preview"
+        );
+        drop(pipe);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("{format} preview did not finish at EOF");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+#[test]
+fn preview_stdin_lookahead_errors_leave_stdout_empty() {
+    tview_command()
+        .args(["--format", "ndjson", "--sorted", "false", "-n", "1", "-"])
+        .write_stdin("{\"a\":1}\ninvalid\n")
+        .assert()
+        .code(1)
+        .stdout("");
+}
+
+#[test]
+fn preview_auto_preserves_two_member_json_records() {
+    let input = r#"{"user":{"id":1},"meta":{"id":2}}"#;
+    let file = fixture(input, ".json");
+    let expected = tview_command()
+        .args(["--format", "json", "--sorted", "false"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    tview_command()
+        .args(["--format", "json", "--sorted", "false", "-n", "1", "-"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(expected);
+    for malformed in [
+        r#"{"user":{"id":1},"meta":{"id":2},invalid}"#,
+        r#"{"user":{"id":1},"meta":{"id":2},"third":invalid}"#,
+    ] {
+        let file = fixture(malformed, ".json");
+        tview_command()
+            .args(["--sorted", "false", "-n", "1"])
+            .arg(file.path())
+            .assert()
+            .code(1)
+            .stdout("");
+        tview_command()
+            .args(["--format", "json", "--sorted", "false", "-n", "1", "-"])
+            .write_stdin(malformed)
+            .assert()
+            .code(1)
+            .stdout("");
+    }
+}
+
+#[test]
+fn preview_stdin_detects_delimiter_after_multiline_header() {
+    tview_command()
+        .args(["--format", "delimited", "--sorted", "false", "-n", "1", "-"])
+        .write_stdin("\"First\nName\";Value\nalpha;1\nbeta;2\n")
+        .assert()
+        .success()
+        .stdout("First\\nName  Value\nalpha            1\nmore rows...\n");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_full_schema_limits_replayed_rows_for_late_filters() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(views.join("filtered.yml"), "name: filtered\nfilenames: ['*']\nsource: {}\nview:\n  filters:\n    - {column: /late, action: out, kind: text, condition: yes}\n").unwrap();
+    let file = fixture(
+        r#"[{"id":1},{"id":2},{"id":3},{"id":4,"late":"yes"},{"id":5,"late":"no"}]"#,
+        ".json",
+    );
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args([
+            "--view",
+            "filtered",
+            "--schema-scan",
+            "full",
+            "--sorted",
+            "false",
+            "-n",
+            "1",
+        ])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("id  late\n 1\n3 more rows...\n");
 }

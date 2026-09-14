@@ -283,29 +283,6 @@ fn detect_keyed_object(entries: &[RawObjectEntry]) -> anyhow::Result<bool> {
     Ok(values_are_keyed_object(&detection_sample(entries)?))
 }
 
-fn detect_keyed_object_with_minimum(
-    entries: &[RawObjectEntry],
-    minimum: usize,
-) -> anyhow::Result<bool> {
-    let sample = detection_sample(entries)?;
-    if sample.len() < minimum || !sample.iter().all(Value::is_object) {
-        return Ok(false);
-    }
-    let mut counts = HashMap::<(String, JsonValueKind), usize>::new();
-    for value in &sample {
-        let Value::Object(object) = value else {
-            return Ok(false);
-        };
-        for (key, value) in object {
-            *counts
-                .entry((key.clone(), json_value_kind(value)))
-                .or_default() += 1;
-        }
-    }
-    let threshold = sample.len().saturating_mul(3).div_ceil(4);
-    Ok(counts.values().any(|count| *count >= threshold))
-}
-
 fn flatten_object_record(entries: &[RawObjectEntry]) -> anyhow::Result<FlatRow> {
     let mut object = serde_json::Map::new();
     for entry in entries {

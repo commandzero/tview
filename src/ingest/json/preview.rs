@@ -246,27 +246,16 @@ fn open_reader(
     let mut warnings = Vec::new();
     if matches!(store.shape, Shape::Entries) {
         let mut sample = Vec::new();
-        let mut detection_incomplete = false;
-        let preview_stdin = options.preview && matches!(&source, InputSource::Stdin);
         if options.object_mode == ObjectMode::Auto {
             let mut bytes = 0;
-            let max_entries = if preview_stdin {
-                2
-            } else if options.preview {
+            let max_entries = if options.preview {
                 3
             } else {
                 OBJECT_DETECTION_MAX_ENTRIES
             };
             while sample.len() < max_entries && bytes < OBJECT_DETECTION_MAX_BYTES {
-                let entry = match store.next_entry() {
-                    Ok(Some(entry)) => entry,
-                    Ok(None) => break,
-                    Err(error) if options.preview => {
-                        detection_incomplete = true;
-                        let _ = error;
-                        break;
-                    }
-                    Err(error) => return Err(error),
+                let Some(entry) = store.next_entry()? else {
+                    break;
                 };
                 bytes += entry.encoded_len();
                 sample.push(entry);
@@ -276,15 +265,7 @@ fn open_reader(
             SelectedValueShape::Object,
             options.object_mode,
             options.object_mode_origin,
-            options.object_mode == ObjectMode::Auto
-                && if preview_stdin {
-                    // A live stdin producer cannot prove a third member without waiting for EOF.
-                    detect_keyed_object_with_minimum(&sample, 2)?
-                } else if detection_incomplete {
-                    detect_keyed_object_with_minimum(&sample, 2)?
-                } else {
-                    detect_keyed_object(&sample)?
-                },
+            options.object_mode == ObjectMode::Auto && detect_keyed_object(&sample)?,
         )?;
         object_mode = resolution.object_mode;
         if resolution.table_shape == Some(SelectedTableShape::ObjectRecord) {

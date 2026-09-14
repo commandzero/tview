@@ -2517,7 +2517,6 @@ impl TableView {
                 .incremental_store
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
-            let live_input = shared.0.borrow().is_live_input();
             let defer_schema_for_filter = full_schema || !self.filters.is_empty() || {
                 #[cfg(feature = "saved-views")]
                 {
@@ -2539,10 +2538,6 @@ impl TableView {
             loop {
                 // Retain the emitted schema while lookahead checks later matching rows.
                 if !full_schema && selected.len() == limit && prefix_state.is_none() {
-                    if live_input {
-                        more = true;
-                        break;
-                    }
                     prefix_state = Some(self.clone());
                 }
                 #[cfg(feature = "saved-views")]
@@ -2581,9 +2576,10 @@ impl TableView {
                                 if !full_schema {
                                     break;
                                 }
+                            } else {
+                                ids.push(row_id);
+                                selected.push(cells);
                             }
-                            ids.push(row_id);
-                            selected.push(cells);
                         }
                     }
                     if more && !full_schema {

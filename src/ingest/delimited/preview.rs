@@ -277,17 +277,41 @@ fn open_reader(
         .lines()
         .next()
         .is_none_or(|line| line.trim().is_empty() || line.trim_start().starts_with(['#', '%']));
-    let path_needs_followup =
-        matches!(&source, InputSource::Path(_)) && sniff_delimiter(&sample).is_none();
-    if options.delimited.delimiter.is_none() && (first_line_needs_followup || path_needs_followup) {
+    if options.delimited.delimiter.is_none()
+        && (first_line_needs_followup || sniff_delimiter(&sample).is_none())
+    {
+        // Stop after two complete nonempty records so a single-column live pipe
+        // does not need another record solely for delimiter detection.
+        let quoting = options.delimited.quoting != Some(Quoting::None);
+        let mut quoted = quoting
+            && sample
+                .bytes()
+                .filter(|byte| *byte == options.delimited.quote_char)
+                .count()
+                % 2
+                != 0;
+        let mut complete_records = usize::from(!quoted && !sample.trim().is_empty());
         let mut line = String::new();
         for _ in 0..3 {
-            if sample.len() >= 8192 {
+            if sample.len() >= 8192 || complete_records >= 2 {
                 break;
             }
             line.clear();
             if decoded.read_line(&mut line)? == 0 {
                 break;
+            }
+            if quoting
+                && line
+                    .bytes()
+                    .filter(|byte| *byte == options.delimited.quote_char)
+                    .count()
+                    % 2
+                    != 0
+            {
+                quoted = !quoted;
+            }
+            if !quoted && !line.trim().is_empty() {
+                complete_records += 1;
             }
             sample.push_str(&line);
         }
