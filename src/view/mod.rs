@@ -2497,7 +2497,7 @@ impl TableView {
             }
             self.preview_preparing = false;
             self.apply_query_configuration();
-            self.complete_for_output_with_color(false)?;
+            self.complete_for_output_without_refresh(false)?;
             let total = self.rows.len();
             self.rows.truncate(limit);
             self.row_ids.truncate(limit);
@@ -2699,6 +2699,18 @@ impl TableView {
     }
 
     pub(crate) fn complete_for_output_with_color(&mut self, colored: bool) -> anyhow::Result<()> {
+        self.complete_for_output_with_color_and_refresh(colored, true)
+    }
+
+    fn complete_for_output_without_refresh(&mut self, colored: bool) -> anyhow::Result<()> {
+        self.complete_for_output_with_color_and_refresh(colored, false)
+    }
+
+    fn complete_for_output_with_color_and_refresh(
+        &mut self,
+        colored: bool,
+        refresh_transform: bool,
+    ) -> anyhow::Result<()> {
         if let Some(shared) = self.incremental_store.clone() {
             let progress = shared
                 .0
@@ -2707,7 +2719,7 @@ impl TableView {
             self.apply_source_schema_delta(progress.schema_delta)?;
         }
 
-        if self.view_transform_is_active() {
+        if refresh_transform && self.view_transform_is_active() {
             match self.refresh_view_transform() {
                 QueryRefresh::Applied | QueryRefresh::NotStoreBacked => {}
                 QueryRefresh::Failed => {

@@ -248,7 +248,9 @@ fn open_reader(
         let preview_stdin = options.preview && matches!(&source, InputSource::Stdin);
         if options.object_mode == ObjectMode::Auto {
             let mut bytes = 0;
-            let max_entries = if options.preview {
+            let max_entries = if preview_stdin {
+                2
+            } else if options.preview {
                 3
             } else {
                 OBJECT_DETECTION_MAX_ENTRIES
@@ -273,7 +275,10 @@ fn open_reader(
             options.object_mode,
             options.object_mode_origin,
             options.object_mode == ObjectMode::Auto
-                && if detection_incomplete && !preview_stdin {
+                && if preview_stdin {
+                    // A live stdin producer cannot prove a third member without waiting for EOF.
+                    detect_keyed_object_with_minimum(&sample, 2)?
+                } else if detection_incomplete {
                     detect_keyed_object_with_minimum(&sample, 2)?
                 } else {
                     detect_keyed_object(&sample)?

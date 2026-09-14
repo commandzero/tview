@@ -390,7 +390,7 @@ impl TableStore for SequentialDelimited {
     fn present_columns(&self, row: RowId) -> Option<Vec<usize>> {
         self.rows
             .get(row.ordinal as usize)
-            .map(|row| (0..row.cells.len()).collect())
+            .map(|row| (0..row.cells.len().max(self.initial_schema_column_count)).collect())
     }
 
     fn generation(&self) -> SourceGeneration {

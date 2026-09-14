@@ -198,26 +198,26 @@ impl TableStore for PreviewSourceStore {
                 matches &= file_source_filter_matches(&filter, &row);
             }
             if matches {
-                let present_columns = self
-                    .base
-                    .present_columns(row.id)
-                    .unwrap_or_else(|| (0..row.cells.len()).collect());
-                let required_columns = present_columns
-                    .into_iter()
-                    .max()
-                    .map_or(0, |column| column.saturating_add(1));
-                if self.exposed_column_count < required_columns {
-                    delta.added_columns.extend(
-                        self.definition.columns[self.exposed_column_count..required_columns]
-                            .iter()
-                            .cloned(),
-                    );
-                    self.exposed_column_count = required_columns;
-                }
-                delta
-                    .widened_types
-                    .extend(progress.schema_delta.widened_types);
                 if self.rows.len() < self.query.limit.get() {
+                    let present_columns = self
+                        .base
+                        .present_columns(row.id)
+                        .unwrap_or_else(|| (0..row.cells.len()).collect());
+                    let required_columns = present_columns
+                        .into_iter()
+                        .max()
+                        .map_or(0, |column| column.saturating_add(1));
+                    if self.exposed_column_count < required_columns {
+                        delta.added_columns.extend(
+                            self.definition.columns[self.exposed_column_count..required_columns]
+                                .iter()
+                                .cloned(),
+                        );
+                        self.exposed_column_count = required_columns;
+                    }
+                    delta
+                        .widened_types
+                        .extend(progress.schema_delta.widened_types);
                     self.rows.push(row);
                 }
                 if self.rows.len() >= self.query.limit.get() && self.requests_resolved() {
