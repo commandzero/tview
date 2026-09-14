@@ -261,7 +261,7 @@ fn detection_sample(entries: &[RawObjectEntry]) -> anyhow::Result<Vec<Value>> {
 }
 
 fn values_are_keyed_object(sampled: &[Value]) -> bool {
-    if sampled.len() < 3 || !sampled.iter().all(Value::is_object) {
+    if sampled.len() < 2 || !sampled.iter().all(Value::is_object) {
         return false;
     }
     let mut counts = HashMap::<(String, JsonValueKind), usize>::new();

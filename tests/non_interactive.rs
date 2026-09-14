@@ -1190,6 +1190,51 @@ fn preview_saved_content_width_uses_selected_rows() {
         .stderr("");
 }
 
+#[test]
+fn preview_keyed_object_auto_stops_before_malformed_suffix() {
+    let file = fixture(r#"{"a":{"id":1},"b":{"id":2},invalid}"#, ".json");
+
+    tview_command()
+        .args([
+            "--format",
+            "json",
+            "--object-mode",
+            "auto",
+            "--sorted",
+            "false",
+            "-n",
+            "1",
+        ])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("name  id\na      1\nmore rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_source_limit_does_not_widen_headerless_schema() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("limited.yml"),
+        "name: limited\nfilenames: ['*']\nsource:\n  limit: 1\nview: {}\n",
+    )
+    .unwrap();
+    let file = fixture("1,2\n3,4,late\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "limited", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("       1         2\n")
+        .stderr("");
+}
+
 #[cfg(feature = "saved-views")]
 #[test]
 fn preview_color_profiles_ignore_omitted_values() {

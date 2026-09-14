@@ -247,7 +247,7 @@ fn open_reader(
         if options.object_mode == ObjectMode::Auto {
             let mut bytes = 0;
             let max_entries = if options.preview {
-                3
+                2
             } else {
                 OBJECT_DETECTION_MAX_ENTRIES
             };
@@ -286,11 +286,15 @@ fn open_reader(
         )?;
         warnings.extend(resolution.warning);
     }
-    store.ensure_indexed_through(RowIndex(if options.schema_scan == SchemaScan::Full {
+    let scan_target = if options.schema_scan == SchemaScan::Full
+        && options.limit.is_none()
+        && options.source_filters.is_empty()
+    {
         usize::MAX
     } else {
         0
-    }))?;
+    };
+    store.ensure_indexed_through(RowIndex(scan_target))?;
     store.schema.assign_initial_labels();
     let definition = TableDefinition {
         generation,

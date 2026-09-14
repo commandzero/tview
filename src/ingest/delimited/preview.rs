@@ -111,7 +111,18 @@ fn open_reader(
     options: &OpenOptions,
     mut input: Box<dyn BufRead + Send>,
 ) -> anyhow::Result<OpenedSource> {
-    let sample = input.fill_buf()?;
+    const ENCODING_PROBE_BYTES: u64 = 1024 * 1024;
+    let mut encoding_probe = Vec::new();
+    if options.delimited.encoding.is_none() && matches!(&source, InputSource::Path(_)) {
+        (&mut *input)
+            .take(ENCODING_PROBE_BYTES)
+            .read_to_end(&mut encoding_probe)?;
+    }
+    let sample = if encoding_probe.is_empty() {
+        input.fill_buf()?
+    } else {
+        encoding_probe.as_slice()
+    };
     let label = if let Some(label) = &options.delimited.encoding {
         crate::ingest::normalize_encoding_label(label)
     } else {
@@ -122,6 +133,11 @@ fn open_reader(
             _ => decode_input(sample, None)?.encoding,
         }
     };
+    if !encoding_probe.is_empty() {
+        input = Box::new(BufReader::new(
+            std::io::Cursor::new(encoding_probe).chain(input),
+        ));
+    }
     let cp720 = label == "cp720";
     let decoder = if cp720 {
         None
@@ -197,8 +213,19 @@ fn open_reader(
         }
     }
     let generation = SourceGeneration::new();
-    let (mut definition, header_rows) =
-        delimited_definition(generation, &sample, source.display_name());
+    let (_, header_rows) = delimited_definition(generation, &sample, source.display_name());
+    let definition_sample = options
+        .limit
+        .map(|limit| {
+            sample
+                .iter()
+                .take(header_rows + limit.get())
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| sample.clone());
+    let (mut definition, _) =
+        delimited_definition(generation, &definition_sample, source.display_name());
     definition.schema_state = SchemaState::Provisional;
     let rows = sample
         .into_iter()

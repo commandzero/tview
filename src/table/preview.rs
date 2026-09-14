@@ -48,20 +48,26 @@ impl PreviewSourceStore {
     }
 
     fn request_resolved(&self, request: &crate::ingest::SourceFilterRequest) -> bool {
-        request.column == "*"
-            || self
-                .definition
-                .columns
-                .iter()
-                .any(|column| column.display_name == request.column)
-            || self
-                .definition
-                .columns
-                .iter()
-                .enumerate()
-                .any(|(index, _)| {
-                    self.definition.canonical_column_key(index).as_deref() == Some(&request.column)
-                })
+        if request.column == "*" {
+            return true;
+        }
+        if self
+            .definition
+            .columns
+            .iter()
+            .enumerate()
+            .any(|(index, _)| {
+                self.definition.canonical_column_key(index).as_deref() == Some(&request.column)
+            })
+        {
+            return true;
+        }
+        self.definition
+            .columns
+            .iter()
+            .filter(|column| column.display_name == request.column)
+            .count()
+            == 1
     }
 
     fn requests_resolved(&self) -> bool {
@@ -72,6 +78,25 @@ impl PreviewSourceStore {
 
     fn validate_requests(&self) -> anyhow::Result<()> {
         for request in &self.requests {
+            let canonical = self
+                .definition
+                .columns
+                .iter()
+                .enumerate()
+                .any(|(index, _)| {
+                    self.definition.canonical_column_key(index).as_deref() == Some(&request.column)
+                });
+            let display_matches = self
+                .definition
+                .columns
+                .iter()
+                .filter(|column| column.display_name == request.column)
+                .count();
+            anyhow::ensure!(
+                canonical || display_matches <= 1,
+                "source operation column '{}' is ambiguous",
+                request.column
+            );
             anyhow::ensure!(
                 self.request_resolved(request),
                 "source operation column '{}' was not found",
@@ -112,7 +137,7 @@ impl TableStore for PreviewSourceStore {
     fn ensure_indexed_through(&mut self, index: RowIndex) -> anyhow::Result<IndexProgress> {
         let mut delta = SchemaDelta::default();
         let mut bytes_scanned = 0;
-        while !self.complete && self.rows.len() <= index.0 {
+        while !self.complete && (self.rows.len() <= index.0 || !self.requests_resolved()) {
             if self.rows.len() >= self.query.limit.get() && self.requests_resolved() {
                 self.complete = true;
                 break;
