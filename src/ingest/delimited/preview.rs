@@ -24,7 +24,7 @@ impl DecodedReader {
         };
         const ENCODING_FALLBACK_PROBE_BYTES: u64 = 8 * 1024 * 1024;
         let mut bytes = Vec::new();
-        std::fs::File::open(path)?
+        std::fs::File::open(&path)?
             .take(ENCODING_FALLBACK_PROBE_BYTES)
             .read_to_end(&mut bytes)?;
         let decoded = crate::ingest::decode_input(&bytes, None)
@@ -47,7 +47,7 @@ impl DecodedReader {
                     .new_decoder(),
             )
         };
-        let mut reader = BufReader::new(std::io::Cursor::new(bytes));
+        let mut reader = BufReader::new(std::fs::File::open(path)?);
         let mut remaining = offset;
         while remaining > 0 {
             let available = reader.fill_buf()?;
@@ -204,10 +204,16 @@ fn open_reader(
     mut input: Box<dyn BufRead + Send>,
 ) -> anyhow::Result<OpenedSource> {
     const ENCODING_PROBE_BYTES: u64 = 1024 * 1024;
+    const PREVIEW_ENCODING_PROBE_BYTES: u64 = 8192;
     let mut encoding_probe = Vec::new();
     if options.delimited.encoding.is_none() && matches!(&source, InputSource::Path(_)) {
+        let probe_bytes = if options.preview {
+            PREVIEW_ENCODING_PROBE_BYTES
+        } else {
+            ENCODING_PROBE_BYTES
+        };
         (&mut *input)
-            .take(ENCODING_PROBE_BYTES)
+            .take(probe_bytes)
             .read_to_end(&mut encoding_probe)?;
     }
     let sample = if encoding_probe.is_empty() {
@@ -320,6 +326,11 @@ fn open_reader(
     }
     let generation = SourceGeneration::new();
     let (_, header_rows) = delimited_definition(generation, &sample, source.display_name());
+    let header_column_count = if header_rows == 1 {
+        sample.first().map_or(0, Vec::len)
+    } else {
+        0
+    };
     let definition_sample = sample
         .iter()
         .take(header_rows.saturating_add(1))
@@ -327,6 +338,9 @@ fn open_reader(
         .collect::<Vec<_>>();
     let (mut definition, _) =
         delimited_definition(generation, &definition_sample, source.display_name());
+    if !options.source_filters.is_empty() && header_rows == 1 {
+        definition.columns.truncate(header_column_count);
+    }
     definition.schema_state = SchemaState::Provisional;
     let seed_end = header_rows.saturating_add(1).min(sample.len());
     records.prepend(sample.iter().skip(seed_end).cloned());

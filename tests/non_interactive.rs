@@ -938,6 +938,29 @@ fn preview_source_filters_do_not_expose_filtered_schema_columns() {
 
 #[cfg(feature = "saved-views")]
 #[test]
+fn preview_source_filters_do_not_expose_rejected_schema_columns_when_empty() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("filtered.yml"),
+        "name: filtered\nfilenames: ['*']\nsource:\n  filters:\n    - {column: id, operator: equal, value: '2'}\nview: {}\n",
+    )
+    .unwrap();
+    let file = fixture("id,name\n0,ignored,late\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "filtered", "--schema-scan", "full", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("id  name\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
 fn preview_source_limit_reports_exact_remainder() {
     let config = tempfile::tempdir().unwrap();
     let views = config.path().join("tview/views");
