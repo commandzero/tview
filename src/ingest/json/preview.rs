@@ -248,7 +248,7 @@ fn open_reader(
         let mut sample = Vec::new();
         if options.object_mode == ObjectMode::Auto {
             let mut bytes = 0;
-            let max_entries = if options.preview {
+            let max_entries = if options.preview && options.schema_scan != SchemaScan::Full {
                 3
             } else {
                 OBJECT_DETECTION_MAX_ENTRIES

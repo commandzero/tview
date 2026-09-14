@@ -2621,7 +2621,8 @@ impl TableView {
             remaining = if more {
                 match count {
                     crate::table::RowCount::Exact(total)
-                        if self.filters.is_empty() || index >= total =>
+                        if !self.source_result_is_partial()
+                            && (self.filters.is_empty() || index >= total) =>
                     {
                         let remainder = if self.filters.is_empty() {
                             total.saturating_sub(limit)

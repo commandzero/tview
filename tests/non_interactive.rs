@@ -1578,3 +1578,65 @@ fn preview_full_schema_limits_replayed_rows_for_late_filters() {
         .success()
         .stdout("id  late\n 1\n3 more rows...\n");
 }
+
+#[test]
+fn preview_full_schema_preserves_mixed_object_shape() {
+    let input = r#"{"a":{"id":1},"b":{"id":2},"c":{"id":3},"meta":true}"#;
+    let file = fixture(input, ".json");
+    let expected = tview_command()
+        .args(["--sorted", "false", "--schema-scan", "full"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    tview_command()
+        .args(["--sorted", "false", "--schema-scan", "full", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout(expected.clone());
+    tview_command()
+        .args([
+            "--format",
+            "json",
+            "--sorted",
+            "false",
+            "--schema-scan",
+            "full",
+            "-n",
+            "1",
+            "-",
+        ])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(expected);
+}
+
+#[cfg(feature = "elasticsearch")]
+#[test]
+fn elasticsearch_preview_partial_result_has_unknown_remainder() {
+    let _guard = elasticsearch_test_lock();
+    let server = ElasticsearchServer::start(vec![ElasticsearchResponse::ok(
+        r#"{"columns":[{"name":"level","type":"keyword"}],"values":[["error"],["warning"],["info"]],"is_partial":true}"#,
+    )]);
+    tview_command()
+        .args([
+            "--format",
+            "elasticsearch",
+            "--query",
+            "FROM logs-* | KEEP level",
+            "--sorted",
+            "false",
+            "-n",
+            "1",
+            server.endpoint(),
+        ])
+        .assert()
+        .success()
+        .stdout("level\nerror\nmore rows...\n")
+        .stderr(predicate::str::contains("partial result"));
+    assert_eq!(server.requests().len(), 1);
+}
