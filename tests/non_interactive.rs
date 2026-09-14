@@ -733,7 +733,7 @@ fn preview_sort_override_preserves_filters_and_saved_file() {
     std::fs::write(&saved, yaml).unwrap();
     let file = fixture("Name,Count\nalpha,1\nbeta,3\ngamma,5\ndelta,4\n", ".csv");
     for (sorting, expected) in [
-        ("false", "Name  Count\nBETA      3\nmore rows...\n"),
+        ("false", "Name  Count\nBETA      3\n2 more rows...\n"),
         ("true", "Name   Count\nGAMMA      5\n2 more rows...\n"),
     ] {
         tview_command()
@@ -1124,7 +1124,7 @@ fn preview_file_source_limit_and_selective_view_filters_stop_at_the_right_rows()
         .arg(file.path())
         .assert()
         .success()
-        .stdout(" id\n101\n102\n103\nmore rows...\n");
+        .stdout(" id\n101\n102\n103\n2 more rows...\n");
     tview_command()
         .env("XDG_CONFIG_HOME", config.path())
         .args(["--sorted", "false", "-n", "10"])
@@ -1152,6 +1152,42 @@ fn preview_pending_columns_and_sorts_do_not_force_a_scan() {
         .assert()
         .success()
         .stdout("late\nYES\nmore rows...\n");
+}
+
+#[test]
+fn preview_delimiter_detection_uses_bounded_followup_lines() {
+    let file = fixture("\n# Name Value\nalpha 1\nbeta 2\n", ".txt");
+
+    tview_command()
+        .args(["--sorted", "false", "-n", "2"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("Name   Value\nalpha      1\nbeta       2\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_saved_content_width_uses_selected_rows() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("width.yml"),
+        "name: width\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    Name:\n      width: content\n",
+    )
+    .unwrap();
+    let file = fixture("Name,Kind\na,x\nvery-long-value,y\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "width", "--sorted", "false", "-n", "2"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("Name             Kind\na                x\nvery-long-value  y\n")
+        .stderr("");
 }
 
 #[cfg(feature = "saved-views")]

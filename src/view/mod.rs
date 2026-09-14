@@ -333,6 +333,8 @@ pub struct TableView {
     #[cfg(feature = "saved-views")]
     saved_column_locale: Option<String>,
     #[cfg(feature = "saved-views")]
+    saved_column_widths: Vec<Option<crate::saved_views::ColumnWidth>>,
+    #[cfg(feature = "saved-views")]
     pending_saved_sorts: Vec<crate::saved_views::SortKey>,
     #[cfg(feature = "saved-views")]
     pending_saved_filters: Vec<crate::saved_views::SavedFilter>,
@@ -387,6 +389,7 @@ impl TableView {
         };
 
         let columns = Columns::infer(header.as_deref(), &rows);
+        let column_count = columns.len();
         let visible_rows = (0..rows.len()).collect();
 
         Self {
@@ -449,6 +452,8 @@ impl TableView {
             #[cfg(feature = "saved-views")]
             saved_column_locale: None,
             #[cfg(feature = "saved-views")]
+            saved_column_widths: vec![None; column_count],
+            #[cfg(feature = "saved-views")]
             pending_saved_sorts: Vec::new(),
             #[cfg(feature = "saved-views")]
             pending_saved_filters: Vec::new(),
@@ -493,6 +498,7 @@ impl TableView {
                 .collect::<Vec<_>>(),
         );
         let columns = Columns::infer(header.as_deref(), &rows);
+        let column_count = columns.len();
         let visible_rows = (0..rows.len()).collect();
         Ok(Self {
             preview_preparing: false,
@@ -555,6 +561,8 @@ impl TableView {
             pending_saved_columns: BTreeMap::new(),
             #[cfg(feature = "saved-views")]
             saved_column_locale: None,
+            #[cfg(feature = "saved-views")]
+            saved_column_widths: vec![None; column_count],
             #[cfg(feature = "saved-views")]
             pending_saved_sorts: Vec::new(),
             #[cfg(feature = "saved-views")]
@@ -1160,6 +1168,10 @@ impl TableView {
         delta: crate::table::SchemaDelta,
     ) -> anyhow::Result<()> {
         if delta.is_empty() {
+            #[cfg(feature = "saved-views")]
+            if delta.completed {
+                self.apply_pending_saved_operations(true);
+            }
             return Ok(());
         }
         #[cfg(feature = "saved-views")]
@@ -2474,11 +2486,13 @@ impl TableView {
             self.rows.truncate(limit);
             self.row_ids.truncate(limit);
             self.visible_rows = (0..self.rows.len()).collect();
-            remaining = (total > limit).then_some(if has_sort || self.filters.is_empty() {
-                crate::table::RowCount::Exact(total.saturating_sub(limit))
-            } else {
-                crate::table::RowCount::Unknown
-            });
+            remaining = (total > limit).then_some(
+                if has_sort || needs_full_materialization || self.filters.is_empty() {
+                    crate::table::RowCount::Exact(total.saturating_sub(limit))
+                } else {
+                    crate::table::RowCount::Unknown
+                },
+            );
         } else {
             let shared = self
                 .incremental_store
@@ -2618,6 +2632,8 @@ impl TableView {
         if colored {
             self.rebuild_column_color_metadata();
         }
+        #[cfg(feature = "saved-views")]
+        self.resolve_saved_column_widths();
         Ok(remaining)
     }
 
@@ -3152,6 +3168,16 @@ impl TableView {
                 *slot = color_metadata;
             }
             if let Some(width) = column_view.width {
+                if let Some(saved_width) = self.saved_column_widths.get_mut(source_column) {
+                    *saved_width = matches!(
+                        width,
+                        crate::saved_views::ColumnWidth::Header
+                            | crate::saved_views::ColumnWidth::Content
+                            | crate::saved_views::ColumnWidth::Mode
+                            | crate::saved_views::ColumnWidth::Max
+                    )
+                    .then_some(width);
+                }
                 if let Some(target) = self.column_widths.get_mut(source_column) {
                     *target = match width {
                         crate::saved_views::ColumnWidth::Fixed(width) => width as usize,
@@ -3205,6 +3231,36 @@ impl TableView {
             self.hidden_columns.clear();
         }
         self.keep_cursor_visible();
+    }
+
+    #[cfg(feature = "saved-views")]
+    fn resolve_saved_column_widths(&mut self) {
+        if !self.saved_column_widths.iter().any(Option::is_some) {
+            return;
+        }
+        self.ensure_custom_column_widths();
+        let header_widths = self.computed_header_widths();
+        let content_widths = self.computed_content_widths();
+        let mode_widths = self.computed_column_widths(ColumnWidthMode::Mode);
+        let max_widths = self.computed_column_widths(ColumnWidthMode::Max);
+        for (source_column, width) in self.saved_column_widths.iter().enumerate() {
+            let Some(width) = width else { continue };
+            let resolved = match width {
+                crate::saved_views::ColumnWidth::Header => &header_widths,
+                crate::saved_views::ColumnWidth::Content => &content_widths,
+                crate::saved_views::ColumnWidth::Mode => &mode_widths,
+                crate::saved_views::ColumnWidth::Max => &max_widths,
+                crate::saved_views::ColumnWidth::Fixed(_) => continue,
+            }
+            .get(source_column)
+            .copied()
+            .unwrap_or(1)
+            .max(1);
+            if let Some(target) = self.column_widths.get_mut(source_column) {
+                *target = resolved;
+                self.column_width_modified.insert(source_column);
+            }
+        }
     }
 
     #[cfg(feature = "saved-views")]

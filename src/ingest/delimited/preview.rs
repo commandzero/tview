@@ -81,8 +81,8 @@ impl Records {
                 } else {
                     &line
                 };
-                *first = false;
                 if !line.trim().is_empty() {
+                    *first = false;
                     return Ok(Some(crate::ingest::split_shell_like(line)));
                 }
             },
@@ -144,9 +144,28 @@ fn open_reader(
         })
     };
     let mut decoded = BufReader::new(decoded);
-    // Sniff the first physical line and replay it; read_line does not drain an open pipe.
+    // Sniff the first physical line and, for leading blank/comment lines, a small bounded
+    // follow-up sample. Replay every sampled line so preview parsing sees the same input.
     let mut sample = String::new();
     decoded.read_line(&mut sample)?;
+    if options.delimited.delimiter.is_none()
+        && sample
+            .lines()
+            .next()
+            .is_none_or(|line| line.trim().is_empty() || line.trim_start().starts_with(['#', '%']))
+    {
+        let mut line = String::new();
+        for _ in 0..3 {
+            if sample.len() >= 8192 {
+                break;
+            }
+            line.clear();
+            if decoded.read_line(&mut line)? == 0 {
+                break;
+            }
+            sample.push_str(&line);
+        }
+    }
     let delimiter = options
         .delimited
         .delimiter
