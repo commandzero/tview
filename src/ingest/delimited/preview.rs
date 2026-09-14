@@ -1,6 +1,7 @@
 use super::*;
 use crate::ingest::SchemaScan;
 use crate::table::RowId;
+use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read};
 
 /// Decode on demand so a short stdin preview need not wait for EOF.
@@ -54,38 +55,62 @@ impl Read for DecodedReader {
 }
 
 enum Records {
-    Csv(csv::Reader<Box<dyn Read + Send>>),
+    Csv {
+        reader: csv::Reader<Box<dyn Read + Send>>,
+        pending: VecDeque<Vec<String>>,
+    },
     Space {
         reader: BufReader<Box<dyn Read + Send>>,
         first: bool,
+        pending: VecDeque<Vec<String>>,
     },
 }
 impl Records {
     fn next(&mut self) -> anyhow::Result<Option<Vec<String>>> {
         match self {
-            Self::Csv(reader) => {
+            Self::Csv { reader, pending } => {
+                if let Some(row) = pending.pop_front() {
+                    return Ok(Some(row));
+                }
                 let mut record = csv::StringRecord::new();
                 Ok(reader
                     .read_record(&mut record)?
                     .then(|| record.iter().map(ToOwned::to_owned).collect()))
             }
-            Self::Space { reader, first } => loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line)? == 0 {
-                    return Ok(None);
+            Self::Space {
+                reader,
+                first,
+                pending,
+            } => {
+                if let Some(row) = pending.pop_front() {
+                    return Ok(Some(row));
                 }
-                let line = if *first {
-                    line.strip_prefix('#')
-                        .or_else(|| line.strip_prefix('%'))
-                        .unwrap_or(&line)
-                } else {
-                    &line
-                };
-                if !line.trim().is_empty() {
-                    *first = false;
-                    return Ok(Some(crate::ingest::split_shell_like(line)));
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line)? == 0 {
+                        return Ok(None);
+                    }
+                    let line = if *first {
+                        line.strip_prefix('#')
+                            .or_else(|| line.strip_prefix('%'))
+                            .unwrap_or(&line)
+                    } else {
+                        &line
+                    };
+                    if !line.trim().is_empty() {
+                        *first = false;
+                        return Ok(Some(crate::ingest::split_shell_like(line)));
+                    }
                 }
-            },
+            }
+        }
+    }
+
+    fn prepend(&mut self, rows: impl IntoIterator<Item = Vec<String>>) {
+        match self {
+            Self::Csv { pending, .. } | Self::Space { pending, .. } => {
+                pending.extend(rows);
+            }
         }
     }
 }
@@ -192,17 +217,19 @@ fn open_reader(
         Records::Space {
             reader: BufReader::new(replay),
             first: true,
+            pending: VecDeque::new(),
         }
     } else {
-        Records::Csv(
-            csv::ReaderBuilder::new()
+        Records::Csv {
+            reader: csv::ReaderBuilder::new()
                 .has_headers(false)
                 .flexible(true)
                 .delimiter(delimiter)
                 .quote(options.delimited.quote_char)
                 .quoting(options.delimited.quoting != Some(Quoting::None))
                 .from_reader(replay),
-        )
+            pending: VecDeque::new(),
+        }
     };
     let mut sample = Vec::new();
     for _ in 0..2 {
@@ -214,22 +241,20 @@ fn open_reader(
     }
     let generation = SourceGeneration::new();
     let (_, header_rows) = delimited_definition(generation, &sample, source.display_name());
-    let definition_sample = options
-        .limit
-        .map(|limit| {
-            sample
-                .iter()
-                .take(header_rows + limit.get())
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| sample.clone());
+    let definition_sample = sample
+        .iter()
+        .take(header_rows.saturating_add(1))
+        .cloned()
+        .collect::<Vec<_>>();
     let (mut definition, _) =
         delimited_definition(generation, &definition_sample, source.display_name());
     definition.schema_state = SchemaState::Provisional;
+    let seed_end = header_rows.saturating_add(1).min(sample.len());
+    records.prepend(sample.iter().skip(seed_end).cloned());
     let rows = sample
         .into_iter()
         .skip(header_rows)
+        .take(1)
         .enumerate()
         .map(|(index, row)| {
             Row::new(
