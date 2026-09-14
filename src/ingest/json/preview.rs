@@ -263,7 +263,8 @@ fn open_reader(
             SelectedValueShape::Object,
             options.object_mode,
             options.object_mode_origin,
-            options.object_mode == ObjectMode::Auto && detect_keyed_object(&sample)?,
+            options.object_mode == ObjectMode::Auto
+                && detect_keyed_object_with_minimum(&sample, 2)?,
         )?;
         object_mode = resolution.object_mode;
         if resolution.table_shape == Some(SelectedTableShape::ObjectRecord) {
