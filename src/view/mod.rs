@@ -389,6 +389,7 @@ impl TableView {
         };
 
         let columns = Columns::infer(header.as_deref(), &rows);
+        #[cfg(feature = "saved-views")]
         let column_count = columns.len();
         let visible_rows = (0..rows.len()).collect();
 
@@ -498,6 +499,7 @@ impl TableView {
                 .collect::<Vec<_>>(),
         );
         let columns = Columns::infer(header.as_deref(), &rows);
+        #[cfg(feature = "saved-views")]
         let column_count = columns.len();
         let visible_rows = (0..rows.len()).collect();
         Ok(Self {
