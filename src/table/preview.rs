@@ -9,6 +9,7 @@ pub(crate) struct PreviewSourceStore {
     rows: Vec<Row>,
     next: usize,
     complete: bool,
+    exposed_column_count: usize,
 }
 
 impl PreviewSourceStore {
@@ -33,6 +34,7 @@ impl PreviewSourceStore {
                 "source sorting is unavailable for streaming delimited and structured files"
             );
         }
+        let exposed_column_count = definition.columns.len();
         Ok(Self {
             base,
             definition,
@@ -41,6 +43,7 @@ impl PreviewSourceStore {
             rows: Vec::new(),
             next: 0,
             complete: false,
+            exposed_column_count,
         })
     }
 }
@@ -54,7 +57,7 @@ impl TableStore for PreviewSourceStore {
         self.definition.generation
     }
     fn column_count(&self) -> usize {
-        self.definition.columns.len()
+        self.exposed_column_count
     }
     fn row_count(&self) -> RowCount {
         if self.complete {
@@ -82,12 +85,6 @@ impl TableStore for PreviewSourceStore {
             }
             let progress = self.base.ensure_indexed_through(RowIndex(self.next))?;
             self.definition.apply_delta(progress.schema_delta.clone())?;
-            delta
-                .added_columns
-                .extend(progress.schema_delta.added_columns);
-            delta
-                .widened_types
-                .extend(progress.schema_delta.widened_types);
             bytes_scanned += progress.bytes_scanned;
             let Some(row) = self.base.row(RowIndex(self.next))? else {
                 for request in &self.requests {
@@ -158,7 +155,29 @@ impl TableStore for PreviewSourceStore {
                 matches &= file_source_filter_matches(&filter, &row);
             }
             if matches {
+                let present_columns = self
+                    .base
+                    .present_columns(row.id)
+                    .unwrap_or_else(|| (0..row.cells.len()).collect());
+                let required_columns = present_columns
+                    .into_iter()
+                    .max()
+                    .map_or(0, |column| column.saturating_add(1));
+                if self.exposed_column_count < required_columns {
+                    delta.added_columns.extend(
+                        self.definition.columns[self.exposed_column_count..required_columns]
+                            .iter()
+                            .cloned(),
+                    );
+                    self.exposed_column_count = required_columns;
+                }
+                delta
+                    .widened_types
+                    .extend(progress.schema_delta.widened_types);
                 self.rows.push(row);
+                if self.rows.len() == self.query.limit.get() {
+                    self.complete = true;
+                }
             }
         }
         delta.completed = self.complete;

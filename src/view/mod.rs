@@ -1990,10 +1990,18 @@ impl TableView {
                 }
             }
         };
+        let base_rows = base
+            .rows()
+            .iter()
+            .map(crate::table::Row::display_cells)
+            .collect::<Vec<_>>();
+        let base_columns = Columns::infer(self.header.as_deref(), &base_rows);
         let numeric_profiles = definition
             .columns
             .iter()
-            .map(|column| self.source_numeric_column_profile(column.id.ordinal as usize))
+            .map(|column| {
+                base_columns.numeric_profile(ColumnIndex::new(column.id.ordinal as usize))
+            })
             .collect::<Vec<_>>();
         let result = match crate::table::execute_local_view_transform_with_profiles(
             &base,
@@ -2424,10 +2432,11 @@ impl TableView {
             }
             self.preview_preparing = false;
             self.apply_query_configuration();
-            self.complete_for_output()?;
+            self.complete_for_output_with_color(false)?;
             let total = self.rows.len();
             self.rows.truncate(limit);
             self.row_ids.truncate(limit);
+            self.visible_rows = (0..self.rows.len()).collect();
             remaining = (total > limit)
                 .then_some(crate::table::RowCount::Exact(total.saturating_sub(limit)));
         } else {
@@ -2435,6 +2444,13 @@ impl TableView {
                 .incremental_store
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
+            if full_schema {
+                let progress = shared
+                    .0
+                    .borrow_mut()
+                    .ensure_indexed_through(RowIndex(usize::MAX))?;
+                self.apply_source_schema_delta(progress.schema_delta)?;
+            }
             let mut selected = Vec::new();
             let mut ids = Vec::new();
             let mut index = 0;
@@ -2481,12 +2497,36 @@ impl TableView {
             self.rows = selected;
             self.row_ids = ids;
         }
-        if !full_schema && !self.row_ids.is_empty() {
+        let source_filter_active = self.incremental_store.as_ref().is_some_and(|shared| {
+            shared
+                .0
+                .borrow()
+                .active_source_query()
+                .is_some_and(|query| !query.filters.is_empty())
+        });
+        if (!full_schema || source_filter_active) && !self.row_ids.is_empty() {
             if let Some(shared) = &self.incremental_store {
-                let present = self
-                    .row_ids
+                let mut store = shared.0.borrow_mut();
+                let row_ids = if full_schema && source_filter_active {
+                    let mut row_ids = Vec::new();
+                    store.scan_rows(
+                        crate::table::ScanRequest {
+                            start: RowIndex(0),
+                            direction: crate::table::ScanDirection::Forward,
+                            max_rows: usize::MAX,
+                        },
+                        &mut |_, row: &crate::table::Row| {
+                            row_ids.push(row.id);
+                            std::ops::ControlFlow::Continue(())
+                        },
+                    )?;
+                    row_ids
+                } else {
+                    self.row_ids.clone()
+                };
+                let present = row_ids
                     .iter()
-                    .map(|id| shared.0.borrow().present_columns(*id))
+                    .map(|id| store.present_columns(*id))
                     .collect::<Option<Vec<_>>>();
                 if let Some(present) = present {
                     let present = present.into_iter().flatten().collect::<BTreeSet<_>>();
@@ -2515,6 +2555,10 @@ impl TableView {
     }
 
     pub fn complete_for_output(&mut self) -> anyhow::Result<()> {
+        self.complete_for_output_with_color(true)
+    }
+
+    fn complete_for_output_with_color(&mut self, colored: bool) -> anyhow::Result<()> {
         if let Some(shared) = self.incremental_store.clone() {
             let progress = shared
                 .0
@@ -2559,7 +2603,9 @@ impl TableView {
         self.columns = Columns::infer(self.header.as_deref(), &self.rows);
         self.sampled_column_widths.clear();
         self.computed_column_widths_cache.clear();
-        self.rebuild_column_color_metadata();
+        if colored {
+            self.rebuild_column_color_metadata();
+        }
         self.keep_cursor_visible();
         Ok(())
     }

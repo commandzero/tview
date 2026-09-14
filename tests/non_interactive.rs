@@ -847,6 +847,87 @@ fn preview_full_schema_and_fixed_width_are_honored() {
         .stdout("a   la\nlo\n2 more rows...\n");
 }
 
+#[test]
+fn preview_full_delimited_schema_includes_late_columns() {
+    let file = fixture("a,b\n1,x\n2,y,z\n", ".csv");
+    tview_command()
+        .args(["-n", "1", "--schema-scan", "full"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("a  b  Column 3\n1  x\n1 more rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_source_filters_do_not_expose_filtered_schema_columns() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("filtered.yml"),
+        "name: filtered\nfilenames: ['*']\nsource:\n  filters:\n    - {column: id, operator: equal, value: '2'}\nview: {}\n",
+    )
+    .unwrap();
+    let file = fixture("id,name\n0,ignored,late\n2,kept\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "filtered", "--schema-scan", "full", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("id  name\n 2  kept\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_source_limit_reports_exact_remainder() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("limited.yml"),
+        "name: limited\nfilenames: ['*']\nsource:\n  limit: 2\nview: {}\n",
+    )
+    .unwrap();
+    let file = fixture("id\n1\n2\n3\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "limited", "--sorted", "false", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("id\n 1\n1 more rows...\n")
+        .stderr("");
+}
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_sorted_numeric_profile_uses_materialized_rows() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("sorted.yml"),
+        "name: sorted\nfilenames: ['*']\nsource: {}\nview:\n  sort:\n    - {column: Value, direction: asc, kind: numeric}\n",
+    )
+    .unwrap();
+    let file = fixture("Name,Value\na,1\nb,2m\nc,3s\n", ".csv");
+
+    tview_command()
+        .env("XDG_CONFIG_HOME", config.path())
+        .args(["--view", "sorted", "--sorted", "true", "-n", "1"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stdout("Name  Value\na         1\n2 more rows...\n")
+        .stderr("");
+}
+
 #[cfg(feature = "elasticsearch")]
 #[test]
 fn elasticsearch_preview_uses_one_bounded_query_and_known_remainder() {

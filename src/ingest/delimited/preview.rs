@@ -1,4 +1,6 @@
 use super::*;
+use crate::ingest::SchemaScan;
+use crate::table::RowId;
 use std::io::{self, BufRead, BufReader, Read};
 
 /// Decode on demand so a short stdin preview need not wait for EOF.
@@ -193,12 +195,19 @@ fn open_reader(
             )
         })
         .collect();
-    let store = SequentialDelimited {
+    let mut store = SequentialDelimited {
         records,
         definition: definition.clone(),
         rows,
         eof: false,
     };
+    if options.schema_scan == SchemaScan::Full
+        && options.limit.is_none()
+        && options.source_filters.is_empty()
+    {
+        store.ensure_indexed_through(RowIndex(usize::MAX))?;
+    }
+    let definition = store.definition.clone();
     Ok(OpenedSource::implicit(OpenedTable {
         generation,
         definition,
@@ -209,6 +218,12 @@ fn open_reader(
 }
 
 impl TableStore for SequentialDelimited {
+    fn present_columns(&self, row: RowId) -> Option<Vec<usize>> {
+        self.rows
+            .get(row.ordinal as usize)
+            .map(|row| (0..row.cells.len()).collect())
+    }
+
     fn generation(&self) -> SourceGeneration {
         self.definition.generation
     }
