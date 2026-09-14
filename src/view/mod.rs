@@ -1203,6 +1203,8 @@ impl TableView {
         self.column_color_rules.resize(new_count, Vec::new());
         self.column_color_metadata
             .resize(new_count, ColumnColorMetadata::default());
+        #[cfg(feature = "saved-views")]
+        self.saved_column_widths.resize(new_count, None);
         self.columns = Columns::infer(self.header.as_deref(), &self.rows);
         self.computed_column_widths_cache.clear();
         #[cfg(feature = "saved-views")]
@@ -3087,6 +3089,8 @@ impl TableView {
         resolved: &crate::saved_views::ResolvedColumns,
         locale: Option<&str>,
     ) {
+        self.saved_column_widths
+            .resize(self.source_column_count(), None);
         self.pending_saved_columns.extend(resolved.pending.clone());
         self.saved_column_locale = locale.map(ToOwned::to_owned);
         for (source_column, resolved_column) in resolved.columns.iter().enumerate() {
