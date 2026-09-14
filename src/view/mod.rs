@@ -2513,6 +2513,7 @@ impl TableView {
             let mut ids = Vec::new();
             let mut index = 0;
             let mut more = false;
+            let mut matched_total: usize = 0;
             let mut prefix_state = None;
             let mut deferred_until = None;
             loop {
@@ -2540,6 +2541,7 @@ impl TableView {
                         let row_id = row.id;
                         let cells = row.display_cells();
                         if self.row_passes_filters(&cells) {
+                            matched_total += 1;
                             if selected.len() == limit {
                                 more = true;
                                 break;
@@ -2563,6 +2565,7 @@ impl TableView {
                     continue;
                 }
                 if self.row_passes_filters(&cells) {
+                    matched_total += 1;
                     if selected.len() == limit {
                         more = true;
                         break;
@@ -2574,8 +2577,15 @@ impl TableView {
             let count = shared.0.borrow().row_count();
             remaining = if more {
                 match count {
-                    crate::table::RowCount::Exact(total) if self.filters.is_empty() => {
-                        Some(crate::table::RowCount::Exact(total.saturating_sub(limit)))
+                    crate::table::RowCount::Exact(total)
+                        if self.filters.is_empty() || index >= total =>
+                    {
+                        let remainder = if self.filters.is_empty() {
+                            total.saturating_sub(limit)
+                        } else {
+                            matched_total.saturating_sub(limit)
+                        };
+                        Some(crate::table::RowCount::Exact(remainder))
                     }
                     _ => Some(crate::table::RowCount::Unknown),
                 }

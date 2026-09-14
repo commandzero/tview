@@ -3,6 +3,7 @@ use crate::ingest::SchemaScan;
 use crate::table::RowId;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read};
+use std::path::PathBuf;
 
 /// Decode on demand so a short stdin preview need not wait for EOF.
 struct DecodedReader {
@@ -11,6 +12,55 @@ struct DecodedReader {
     cp720: bool,
     pending: std::io::Cursor<Vec<u8>>,
     eof: bool,
+    fallback_path: Option<PathBuf>,
+    raw_consumed: u64,
+}
+
+impl DecodedReader {
+    fn restart_with_fallback(&mut self, offset: u64) -> io::Result<bool> {
+        let Some(path) = self.fallback_path.take() else {
+            return Ok(false);
+        };
+        let bytes = std::fs::read(path)?;
+        let decoded = crate::ingest::decode_input(&bytes, None)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        if decoded.encoding == "utf-8" {
+            return Ok(false);
+        }
+        let cp720 = decoded.encoding == "cp720";
+        let decoder = if cp720 {
+            None
+        } else {
+            Some(
+                crate::ingest::encoding_for_label(&decoded.encoding)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("unknown encoding '{}'", decoded.encoding),
+                        )
+                    })?
+                    .new_decoder(),
+            )
+        };
+        let mut reader = BufReader::new(std::io::Cursor::new(bytes));
+        let mut remaining = offset;
+        while remaining > 0 {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                return Ok(false);
+            }
+            let consumed = remaining.min(available.len() as u64) as usize;
+            reader.consume(consumed);
+            remaining -= consumed as u64;
+        }
+        self.input = Box::new(reader);
+        self.decoder = decoder;
+        self.cp720 = cp720;
+        self.pending = std::io::Cursor::new(Vec::new());
+        self.eof = false;
+        self.raw_consumed = offset;
+        Ok(true)
+    }
 }
 
 impl Read for DecodedReader {
@@ -41,7 +91,12 @@ impl Read for DecodedReader {
                     .expect("decoder")
                     .decode_to_string(input, &mut text, eof);
                 self.input.consume(consumed);
+                let previous_consumed = self.raw_consumed;
+                self.raw_consumed += consumed as u64;
                 if errors {
+                    if self.restart_with_fallback(previous_consumed)? {
+                        continue;
+                    }
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "input cannot be decoded with the selected encoding",
@@ -173,7 +228,13 @@ fn open_reader(
                 .new_decoder(),
         )
     };
-    let decoded: Box<dyn Read + Send> = if label == "utf-8" {
+    let fallback_path = (label == "utf-8" && options.delimited.encoding.is_none())
+        .then(|| match &source {
+            InputSource::Path(path) => path.clone(),
+            _ => PathBuf::new(),
+        })
+        .filter(|path| !path.as_os_str().is_empty());
+    let decoded: Box<dyn Read + Send> = if label == "utf-8" && fallback_path.is_none() {
         Box::new(input)
     } else {
         Box::new(DecodedReader {
@@ -182,6 +243,8 @@ fn open_reader(
             cp720,
             pending: std::io::Cursor::new(Vec::new()),
             eof: false,
+            fallback_path,
+            raw_consumed: 0,
         })
     };
     let mut decoded = BufReader::new(decoded);
