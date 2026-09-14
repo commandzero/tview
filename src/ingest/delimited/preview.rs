@@ -345,7 +345,13 @@ fn open_reader(
         match records.next() {
             Ok(Some(row)) => sample.push(row),
             Ok(None) => break,
-            Err(_) if options.limit.is_some_and(|limit| limit.get() == 1) && sample.len() == 1 => {
+            Err(_)
+                if options.limit.is_some_and(|limit| limit.get() == 1)
+                    && sample.len() == 1
+                    && sample[0].iter().any(|cell| cell.parse::<f64>().is_ok()) =>
+            {
+                // The header detector treats a numeric first record as data.
+                // An all-text record still needs the second record to classify it.
                 break;
             }
             Err(error) => return Err(error),

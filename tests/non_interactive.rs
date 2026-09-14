@@ -1640,3 +1640,43 @@ fn elasticsearch_preview_partial_result_has_unknown_remainder() {
         .stderr(predicate::str::contains("partial result"));
     assert_eq!(server.requests().len(), 1);
 }
+
+#[cfg(feature = "saved-views")]
+#[test]
+fn preview_source_limit_does_not_hide_first_data_row_errors() {
+    let config = tempfile::tempdir().unwrap();
+    let views = config.path().join("tview/views");
+    std::fs::create_dir_all(&views).unwrap();
+    std::fs::write(
+        views.join("limited.yml"),
+        "name: limited\nfilenames: ['*']\nsource:\n  limit: 1\nview: {}\n",
+    )
+    .unwrap();
+    for (input, success) in [
+        (b"Name,Value\n\xff,broken\n".as_slice(), false),
+        (b"1,2\n\xff,broken\n".as_slice(), true),
+    ] {
+        let mut command = tview_command();
+        command
+            .env("XDG_CONFIG_HOME", config.path())
+            .args([
+                "--view",
+                "limited",
+                "--format",
+                "delimited",
+                "--encoding",
+                "utf-8",
+                "--sorted",
+                "false",
+                "-n",
+                "1",
+                "-",
+            ])
+            .write_stdin(input);
+        if success {
+            command.assert().success().stdout("       1         2\n");
+        } else {
+            command.assert().code(1).stdout("");
+        }
+    }
+}
