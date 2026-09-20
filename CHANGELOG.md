@@ -25,7 +25,7 @@
 - Customizable color themes (#2).
 - Table, JSON, and JSONL export, including the final view after interactive browsing (#4, #8).
 - Fast table previews with `-n` / `--top-lines` (#10).
-- Install with `--features all` to enable every feature.
+- Install with `--features all` to enable every feature (#11).
 
 ## [1.4.4] - 2020-01-09
 
