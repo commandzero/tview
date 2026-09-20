@@ -373,7 +373,11 @@ The system SHALL support skipping to the next or previous change in row or colum
 - **THEN** the cursor moves downward in the current column to the next row whose value differs from the starting cell
 
 ### Requirement: Clipboard operation
-The system SHALL support yanking the rendered current cell contents with `y` and the raw current cell contents with `Y` when compiled with clipboard support, and SHALL fail non-fatally when clipboard support is disabled or unavailable.
+The system SHALL include clipboard support in default builds. It SHALL support yanking the rendered current cell contents with `y` and the raw current cell contents with `Y` when compiled with clipboard support, and SHALL fail non-fatally when clipboard support is disabled or unavailable.
+
+#### Scenario: Default installation includes clipboard
+- **WHEN** Tview is built with default Cargo features or installed from a standard release archive
+- **THEN** clipboard support is enabled without additional feature flags
 
 #### Scenario: Clipboard enabled rendered yank
 - **WHEN** clipboard support is enabled and the user presses `y`

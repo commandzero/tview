@@ -2,14 +2,14 @@
 type: Guide
 title: Turso build and runtime impact
 description: Recorded SQLite dependency, build, and runtime tradeoffs.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:02:26Z }
 ---
 
 # Turso build and runtime impact
 
 ## Dependencies
 
-The default `sqlite` feature enables Turso 0.7.1 and its mimalloc allocator.
+The default `sqlite` feature enables Turso 0.7.2 and its mimalloc allocator.
 Turso's other default features, including FTS, are disabled. SQLite and file
 sources run background queries on the shared Tokio multi-thread runtime.
 Disabling `sqlite` removes Turso and mimalloc, but retains Tokio.

@@ -2,7 +2,7 @@
 type: Guide
 title: Installation
 description: Cargo installation, optional features, and local builds.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:21:51Z }
 ---
 
 # Installation
@@ -19,14 +19,20 @@ guide](migration.md).
 
 ## Optional features
 
-Saved views and SQLite are enabled by default. Clipboard and Elasticsearch
-support are opt-in:
+Saved views, SQLite, and clipboard support are enabled by default.
+Elasticsearch support is opt-in:
 
 ```sh
-cargo install tview --features clipboard
 cargo install tview --features elasticsearch
-cargo install tview --features clipboard,elasticsearch
 ```
+
+Enable every feature, including Elasticsearch, with `all`:
+
+```sh
+cargo install tview --features all
+```
+
+The `all` feature also works with `--no-default-features`.
 
 Omit the default features for a smaller build, or select them individually:
 
@@ -34,6 +40,7 @@ Omit the default features for a smaller build, or select them individually:
 cargo install tview --no-default-features
 cargo install tview --no-default-features --features saved-views
 cargo install tview --no-default-features --features sqlite
+cargo install tview --no-default-features --features clipboard
 ```
 
 ## From a checkout
