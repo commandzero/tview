@@ -15,8 +15,8 @@ Install from crates.io with Rust 1.90.0 or later:
 cargo install tview
 ```
 
-SQLite and saved views are included. Add clipboard or Elasticsearch support
-separately with `--features clipboard` or `--features elasticsearch`. See
+SQLite, saved views, and clipboard support are included. Add Elasticsearch
+support with `--features elasticsearch`. See
 [installation](docs/installation.md) for build options and
 [migration](docs/migration.md) if you used Tabview.
 

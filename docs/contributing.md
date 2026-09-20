@@ -2,7 +2,7 @@
 type: Guide
 title: Contributor guide
 description: Ownership, compiler support, checks, and documentation boundaries.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:16:36Z }
 ---
 
 # Contributor guide
@@ -35,8 +35,8 @@ tests the minimum supported compiler separately. An MSRV increase requires a
 minor version and a changelog entry. Before release, check all supported targets
 and the selected features, including their dependencies.
 
-Default releases include `saved-views` and `sqlite`. `clipboard` and
-`elasticsearch` are opt-in source-build features. All features coexist.
+Default releases include `saved-views`, `sqlite`, and `clipboard`.
+`elasticsearch` is an opt-in source-build feature. All features coexist.
 Preflight runs default, minimal, and all-feature tests plus compilation of each
 source feature alone. This includes library doctests; no fixed coverage
 percentage is required.

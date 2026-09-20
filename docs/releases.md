@@ -2,7 +2,7 @@
 type: Guide
 title: Release process
 description: Reviewed tags, native packaging, checksums, and publication recovery.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:16:36Z }
 ---
 
 # Release process
@@ -37,9 +37,9 @@ advertised release targets. Expand the matrix only with tested demand.
 Each archive is `tview-v<semver>-<rust-target-triple>.tar.gz`. Files appear
 directly at its root: `tview`, `LICENSE.txt`, and `BUILD-INFO.txt`. The metadata
 records tag, commit, compiler, target, host OS, support floor, and enabled
-features. Default binary features are `saved-views,sqlite`. Optional
-Elasticsearch and clipboard support remain source-build options with their own
-preflight coverage.
+features. Default binary features are `saved-views,sqlite,clipboard`.
+Elasticsearch remains an opt-in source-build option with its own preflight
+coverage.
 
 Each `.sha256` sidecar contains the archive hash and basename. Packaging
 extracts the archive into a temporary directory, verifies executable/version

@@ -2,50 +2,30 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-19
+
 ### Removed
 
-- Breaking: removed support for the upstream Python import API. Keep Python
-  integrations on upstream Tabview or follow the [migration steps](docs/migration.md).
-- Removed Python packaging and runtime support from the Rust rewrite.
-- Removed the legacy Travis CI configuration.
+- Breaking: removed the Python API. Python integrations must stay on upstream Tabview (#1).
 
 ### Changed
 
-- Start Tview at `0.1.0` with an independent release sequence; retain upstream
-  Tabview history and attribution. During 0.x, incompatible changes use minor releases.
-- Shortened the README and moved detailed usage into focused user guides.
-- Adopted shared repository checks, documentation validation, compiler pins, and
-  native release packaging. Minimum Rust is 1.90.0.
-- Breaking: renamed the Rust rewrite to `tview`, including its crate, executable,
-  configuration directory, and environment variables. Follow the
-  [migration steps](docs/migration.md) for existing configuration and scripts.
-- Rewrote the upstream Python viewer as a Rust CLI distributed as a single
-  `tview` binary.
-- Preserved the existing command-line interface, including stdin mode, explicit
-  encodings, delimiters, quoting options, and `+y:x` start-position syntax.
-- Rebuilt the spreadsheet-like terminal interface with Ratatui and crossterm
-  while preserving the existing layout, navigation, search, sort, reload,
-  column sizing, header, popup, and skip-to-change workflows.
-- Switched installation to `cargo install tview` from crates.io.
-- Made clipboard support an optional Cargo feature backed by Rust clipboard
-  integration.
-- Made large seekable inputs open through incremental stores with partial row
-  counts, bounded initial rendering, and controlled full-table operations.
-- Unified sorting and filtering across sources. Preserved typed values, stable
-  row identity, null placement, and the previous result when a query fails.
+- Rewrote the upstream Python viewer as a Rust CLI distributed as a single `tview` binary (#1).
+- Breaking: renamed the command and configuration to `tview`. See the
+  [migration guide](https://github.com/commandzero/tview/blob/v0.1.0/docs/migration.md).
+- Large files can open without waiting for the entire input to load (#3).
+- Sorting and filtering work consistently across data sources (#7).
 
 ### Added
 
-- Added `--sorted true|false` to control saved-view sorting in direct table output.
-- Added `-n` and `--top-lines` for fast table previews with a remaining-row summary.
-- Added explicit JSON and JSONL export of displayed cells and `--version`.
-- Added Rust test coverage for CLI compatibility, data ingestion, table
-  operations, rendering snapshots, and accepted behavior changes.
-- Added JSON and NDJSON table inputs with automatic or explicit format
-  selection, RFC 6901 starting paths, typed cells, and streaming schema
-  discovery.
-- Added saved-view source options, canonical JSON column matching, display-label
-  overrides, and view/per-column null-placement policy.
+- JSON and NDJSON input, including nested data (#3).
+- Read-only SQLite browsing with custom SQL queries (#6).
+- Optional Elasticsearch browsing through ES|QL (#7).
+- Saved views for column layout, formatting, filters, sorting, and colors (#1, #2).
+- Customizable color themes (#2).
+- Table, JSON, and JSONL export, including the final view after interactive browsing (#4, #8).
+- Fast table previews with `-n` / `--top-lines` (#10).
+- Install with `--features all` to enable every feature (#11).
 
 ## [1.4.4] - 2020-01-09
 
@@ -165,7 +145,8 @@
 
 - Updated modifier key handling.
 
-[Unreleased]: https://github.com/commandzero/tview/compare/aad067df576e13a16a0b74559ecb59b6b4d1ec4a...main
+[Unreleased]: https://github.com/commandzero/tview/compare/v0.1.0...main
+[0.1.0]: https://github.com/commandzero/tview/releases/tag/v0.1.0
 [1.4.4]: https://github.com/Tabviewer/tabview/compare/1.4.3...1.4.4
 [1.4.3]: https://github.com/Tabviewer/tabview/compare/1.4.2...1.4.3
 [1.4.2]: https://github.com/Tabviewer/tabview/compare/1.4.1...1.4.2
