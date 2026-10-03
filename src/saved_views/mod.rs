@@ -438,19 +438,27 @@ pub fn discover_saved_views(config_root: Option<&Path>) -> SavedViewDiscovery {
 
 pub fn discover_saved_views_in_dir(view_dir: &Path) -> SavedViewDiscovery {
     let mut discovery = SavedViewDiscovery::default();
-    let Ok(entries) = fs::read_dir(view_dir) else {
-        return discovery;
-    };
-    let mut candidates = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            matches!(
-                view_extension(path),
+    let mut candidates = Vec::new();
+    let mut directories = vec![view_dir.to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                directories.push(path);
+            } else if matches!(
+                view_extension(&path),
                 Some(ViewExtension::Yml | ViewExtension::Yaml)
-            )
-        })
-        .collect::<Vec<_>>();
+            ) {
+                candidates.push(path);
+            }
+        }
+    }
     candidates.sort_by(|left, right| {
         view_stem(left)
             .cmp(&view_stem(right))
@@ -464,13 +472,11 @@ pub fn discover_saved_views_in_dir(view_dir: &Path) -> SavedViewDiscovery {
             continue;
         };
         let canonical_name = stem.to_owned();
-        if !seen.insert(canonical_name.clone())
-            && view_extension(&path) == Some(ViewExtension::Yaml)
-        {
+        if !seen.insert(canonical_name.clone()) {
             discovery.warnings.push(warning(
                 path.display().to_string(),
                 format!(
-                    "duplicate saved view '{}': .yml takes precedence over .yaml",
+                    "duplicate saved view '{}': .yml takes precedence over .yaml; otherwise the first path in lexical order wins",
                     canonical_name
                 ),
             ));
@@ -2434,6 +2440,61 @@ view:
         assert_eq!(discovered.views[0].path, views.join("cat-shards.yml"));
         assert_eq!(discovered.views[0].canonical_name, "cat-shards");
         assert_eq!(discovered.warnings.len(), 1);
+    }
+
+    #[test]
+    fn discovers_nested_bundles_and_selects_by_stem_and_basename() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = dir.path().join("tview/views/elasticsearch/nodes");
+        std::fs::create_dir_all(&bundle).expect("bundle dir");
+        let path = bundle.join("cat_nodes.yml");
+        std::fs::write(
+            &path,
+            "name: nodes\nfilenames: [cat_nodes.txt]\nsource: {}\nview: {}\n",
+        )
+        .expect("write view");
+        std::fs::write(bundle.join("README.md"), "Not a view").expect("write readme");
+        let discovered = discover_saved_views(Some(dir.path()));
+        assert_eq!(discovered.views.len(), 1);
+        assert!(discovered.warnings.is_empty());
+        for selection in [
+            SavedViewSelection::Force { name: "cat_nodes" },
+            SavedViewSelection::Auto {
+                input_path: Path::new("/tmp/cat_nodes.txt"),
+            },
+        ] {
+            let selected = select_saved_view(&discovered.views, selection).expect("selected");
+            assert_eq!(selected.view.path, path);
+        }
+    }
+
+    #[test]
+    fn nested_duplicate_stems_have_deterministic_precedence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for relative in ["a/shared.yaml", "b/shared.yml", "c/shared.yml"] {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).expect("bundle dir");
+            std::fs::write(
+                path,
+                "name: shared\nfilenames: [data.csv]\nsource: {}\nview: {}\n",
+            )
+            .expect("write view");
+        }
+        let discovered = discover_saved_views_in_dir(dir.path());
+        assert_eq!(discovered.views.len(), 1);
+        assert_eq!(discovered.views[0].path, dir.path().join("b/shared.yml"));
+        assert_eq!(discovered.warnings.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_does_not_follow_directory_symlink_cycles() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(dir.path(), dir.path().join("cycle"))
+            .expect("directory symlink");
+        let discovered = discover_saved_views_in_dir(dir.path());
+        assert!(discovered.views.is_empty());
+        assert!(discovered.warnings.is_empty());
     }
 
     #[test]
