@@ -147,6 +147,7 @@ impl SqliteSession {
             turso::core::OpenFlags::ReadOnly,
             options,
             None,
+            Arc::new(turso::core::SqliteDialect),
         )?;
         let connection = database.connect()?;
         let session = Self {
@@ -529,7 +530,9 @@ impl SqliteRows {
                     ));
                 }
                 turso::core::StepResult::Done => return Ok(None),
-                turso::core::StepResult::IO | turso::core::StepResult::Yield => {
+                turso::core::StepResult::IO
+                | turso::core::StepResult::Yield
+                | turso::core::StepResult::Sleep { .. } => {
                     self.statement._io().step()?;
                 }
                 turso::core::StepResult::Busy => anyhow::bail!("SQLite database is busy"),
