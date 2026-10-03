@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `-t` / `--table-color` shortcut for `--color always --output table`, with an optional row count for sorted previews.
+- `-p` / `--preview <TOP_LINES>` shortcut for colored, unsorted table previews.
+- Colored `-h` / `--help` on terminals, respecting `NO_COLOR` and keeping redirected help plain.
+
 ## [0.1.0] - 2026-09-19
 
 ### Removed

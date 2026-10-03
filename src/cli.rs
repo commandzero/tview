@@ -1,4 +1,7 @@
-use clap::{ArgAction, Parser};
+use std::ffi::OsString;
+
+use clap::builder::styling::{AnsiColor, Styles};
+use clap::{ArgAction, CommandFactory, Parser};
 
 use crate::ingest::{
     source::SourceTarget, InputFormat, JsonPointer, ObjectMode, Quoting, SchemaScan,
@@ -7,8 +10,14 @@ use crate::ingest::{
 use crate::output::{ColorOutput, OutputFormat};
 use crate::view::ColumnWidthMode;
 
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Magenta.on_default().bold())
+    .usage(AnsiColor::Magenta.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::Green.on_default());
+
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
-#[command(name = "tview", version, disable_help_subcommand = true)]
+#[command(name = "tview", version, disable_help_subcommand = true, styles = HELP_STYLES)]
 #[cfg_attr(
     all(feature = "sqlite", not(feature = "elasticsearch")),
     command(about = "View delimited, JSON, NDJSON, or local SQLite data.")
@@ -36,6 +45,26 @@ pub struct Args {
     /// Output serialization format.
     #[arg(short = 'o', long = "output", value_enum)]
     pub output: Option<OutputFormat>,
+
+    /// Write a colored table, optionally limited to TOP_LINES after saved-view sorting.
+    #[arg(
+        short = 't',
+        long = "table-color",
+        value_name = "TOP_LINES",
+        num_args = 0..=1,
+        require_equals = true,
+        conflicts_with_all = ["output", "color"]
+    )]
+    pub table_color: Option<Option<std::num::NonZeroUsize>>,
+
+    /// Preview TOP_LINES as a colored table in source order, without saved-view sorting.
+    #[arg(
+        short = 'p',
+        long = "preview",
+        value_name = "TOP_LINES",
+        conflicts_with_all = ["output", "color", "sorted", "top_lines", "table_color", "interactive"]
+    )]
+    pub preview: Option<std::num::NonZeroUsize>,
 
     /// Apply saved view sorting for direct table output [default: true].
     #[arg(long, action = ArgAction::Set)]
@@ -114,14 +143,129 @@ pub struct Args {
     pub no_view: bool,
 
     /// Extra positional arguments, including classic +y:x start positions.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(trailing_var_arg = true)]
     pub extra: Vec<String>,
 }
 
 impl Args {
     pub fn parse_args() -> Self {
-        Self::parse()
+        Self::try_parse_args_from(std::env::args_os()).unwrap_or_else(|error| error.exit())
     }
+
+    /// Parse CLI arguments, accepting a separate decimal count after `-t`.
+    pub fn try_parse_args_from<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString>,
+    {
+        Self::try_parse_from(normalize_table_color_args(args.into_iter().map(Into::into)))
+    }
+}
+
+// Clap's optional values consume filenames before type parsing. Keep its grammar
+// equals-only, and attach only decimal counts here without reinterpreting other
+// options' values or the trailing positional arguments.
+fn normalize_table_color_args(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+    let command = Args::command();
+    let mut args = args.peekable();
+    let mut normalized = Vec::new();
+    normalized.extend(args.next());
+    let mut seen_filename = false;
+    while let Some(mut argument) = args.next() {
+        if argument == "--" {
+            normalized.push(argument);
+            normalized.extend(args);
+            break;
+        }
+        match shortcut_argument(&argument, &command) {
+            ShortcutArgument::TableColor(value_start) => {
+                let text = argument.to_str().expect("recognized UTF-8 option");
+                if value_start < text.len() {
+                    argument = format!("{}={}", &text[..value_start], &text[value_start..]).into();
+                } else if args
+                    .peek()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| {
+                        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                {
+                    argument.push("=");
+                    argument.push(args.next().expect("peeked count"));
+                }
+                normalized.push(argument);
+            }
+            ShortcutArgument::ValueOption => {
+                normalized.push(argument);
+                normalized.extend(args.next());
+            }
+            ShortcutArgument::Flag => normalized.push(argument),
+            ShortcutArgument::Positional => {
+                normalized.push(argument);
+                if seen_filename {
+                    normalized.extend(args);
+                    break;
+                }
+                seen_filename = true;
+            }
+        }
+    }
+    normalized
+}
+
+enum ShortcutArgument {
+    Flag,
+    ValueOption,
+    TableColor(usize),
+    Positional,
+}
+
+fn shortcut_argument(argument: &std::ffi::OsStr, command: &clap::Command) -> ShortcutArgument {
+    let Some(text) = argument.to_str() else {
+        return ShortcutArgument::Positional;
+    };
+    if text == "--table-color" {
+        return ShortcutArgument::TableColor(text.len());
+    }
+    if let Some(long) = text.strip_prefix("--") {
+        return if command
+            .get_arguments()
+            .any(|arg| arg.get_long() == Some(long) && arg.get_action().takes_values())
+        {
+            ShortcutArgument::ValueOption
+        } else {
+            ShortcutArgument::Flag
+        };
+    }
+    if !text.starts_with('-') || text == "-" {
+        return ShortcutArgument::Positional;
+    }
+    for (index, short) in text.char_indices().skip(1) {
+        let value_start = index + short.len_utf8();
+        let suffix = &text[value_start..];
+        if short == 't' {
+            if suffix.is_empty() || suffix.starts_with(|ch: char| ch.is_ascii_digit()) {
+                return ShortcutArgument::TableColor(value_start);
+            }
+            if suffix.starts_with('=') {
+                return ShortcutArgument::Flag;
+            }
+        } else {
+            let Some(arg) = command
+                .get_arguments()
+                .find(|arg| arg.get_short() == Some(short))
+            else {
+                return ShortcutArgument::Flag;
+            };
+            if arg.get_action().takes_values() {
+                return if suffix.is_empty() {
+                    ShortcutArgument::ValueOption
+                } else {
+                    ShortcutArgument::Flag
+                };
+            }
+        }
+    }
+    ShortcutArgument::Flag
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +290,20 @@ pub struct Config {
 
 impl Config {
     pub fn from_args(args: Args) -> Result<Self, CliError> {
+        let table_color_limit = args.table_color.flatten();
+        if table_color_limit.is_some() {
+            for (selected, option) in [
+                (args.sorted.is_some(), "--sorted"),
+                (args.top_lines.is_some(), "--top-lines"),
+            ] {
+                if selected {
+                    return Err(CliError::ConflictingOptions {
+                        option: "--table-color <TOP_LINES>",
+                        other: option,
+                    });
+                }
+            }
+        }
         let delimited_option_selected = args.encoding.is_some()
             || args.delimiter.is_some()
             || args.quoting.is_some()
@@ -219,10 +377,22 @@ impl Config {
         Ok(Self {
             target: SourceTarget::from_cli_value(&args.filename),
             interactive: args.interactive,
-            output: args.output,
-            color: args.color,
-            sorted: args.sorted,
-            top_lines: args.top_lines,
+            output: if args.table_color.is_some() || args.preview.is_some() {
+                Some(OutputFormat::Table)
+            } else {
+                args.output
+            },
+            color: if args.table_color.is_some() || args.preview.is_some() {
+                ColorOutput::Always
+            } else {
+                args.color
+            },
+            sorted: args
+                .preview
+                .map(|_| false)
+                .or(table_color_limit.map(|_| true))
+                .or(args.sorted),
+            top_lines: args.preview.or(table_color_limit).or(args.top_lines),
             encoding: args.encoding,
             delimiter: args.delimiter.as_deref().map(parse_byte_char).transpose()?,
             quoting: args.quoting.as_deref().map(parse_quoting).transpose()?,
@@ -293,6 +463,11 @@ pub enum CliError {
     InvalidQuoting { value: String },
     #[error("invalid {what} '{value}'")]
     InvalidChar { what: &'static str, value: String },
+    #[error("{option} cannot be used with {other}")]
+    ConflictingOptions {
+        option: &'static str,
+        other: &'static str,
+    },
     #[error("{option} cannot be used with {format} input")]
     IncompatibleOptions {
         format: InputFormat,
@@ -472,12 +647,12 @@ mod tests {
     }
 
     fn parse(args: &[&str]) -> Config {
-        let args = Args::try_parse_from(args).expect("parse args");
+        let args = Args::try_parse_args_from(args.iter().copied()).expect("parse args");
         Config::from_args(args).expect("config")
     }
 
     fn parse_config_error(args: &[&str]) -> CliError {
-        let args = Args::try_parse_from(args).expect("parse args");
+        let args = Args::try_parse_args_from(args.iter().copied()).expect("parse args");
         Config::from_args(args).expect_err("config error")
     }
 
@@ -514,6 +689,212 @@ mod tests {
         assert!(composed.interactive);
         assert_eq!(composed.output, Some(OutputFormat::Table));
         assert_eq!(composed.color, ColorOutput::Always);
+    }
+
+    #[test]
+    fn table_color_shortcut_matches_explicit_output_options() {
+        for flag in ["-t", "--table-color"] {
+            let shortcut = parse(&["tview", flag, "data.csv"]);
+            let explicit = parse(&[
+                "tview", "--color", "always", "--output", "table", "data.csv",
+            ]);
+            assert_eq!(shortcut, explicit);
+            for stdout_is_terminal in [false, true] {
+                assert_eq!(
+                    crate::output::resolve_execution_mode(
+                        shortcut.interactive,
+                        shortcut.output,
+                        stdout_is_terminal,
+                    ),
+                    crate::output::ExecutionMode::Batch(OutputFormat::Table),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn table_color_shortcut_composes_with_interactive_and_preview_options() {
+        assert_eq!(
+            parse(&["tview", "-it", "data.csv"]),
+            parse(&["tview", "-i", "--color", "always", "--output", "table", "data.csv"]),
+        );
+        for flag in ["-t", "--table-color"] {
+            assert_eq!(
+                parse(&["tview", flag, "--sorted", "false", "-n", "2", "data.csv"]),
+                parse(&[
+                    "tview", "--color", "always", "--output", "table", "--sorted", "false", "-n",
+                    "2", "data.csv",
+                ]),
+            );
+        }
+    }
+
+    #[test]
+    fn preview_shortcuts_match_explicit_options() {
+        let preview = parse(&[
+            "tview",
+            "--output",
+            "table",
+            "--color",
+            "always",
+            "--sorted",
+            "false",
+            "--top-lines",
+            "10",
+            "data.csv",
+        ]);
+        for flags in [
+            vec!["-p", "10"],
+            vec!["--preview", "10"],
+            vec!["-p10"],
+            vec!["--preview=10"],
+        ] {
+            let args = [vec!["tview"], flags.clone(), vec!["data.csv"]].concat();
+            assert_eq!(parse(&args), preview);
+            assert_eq!(parse(&[vec!["tview", "data.csv"], flags].concat()), preview);
+        }
+        let sorted = parse(&[
+            "tview",
+            "--output",
+            "table",
+            "--color",
+            "always",
+            "--sorted",
+            "true",
+            "--top-lines",
+            "10",
+            "data.csv",
+        ]);
+        for flags in [
+            vec!["-t", "10"],
+            vec!["--table-color", "10"],
+            vec!["-t10"],
+            vec!["-t=10"],
+            vec!["--table-color=10"],
+        ] {
+            assert_eq!(
+                parse(&[vec!["tview"], flags.clone(), vec!["data.csv"]].concat()),
+                sorted
+            );
+            assert_eq!(parse(&[vec!["tview", "data.csv"], flags].concat()), sorted);
+        }
+    }
+
+    #[test]
+    fn table_color_normalization_preserves_other_argument_values_and_trailing_args() {
+        for args in [
+            vec!["tview", "--encoding", "-t", "10", "data.csv"],
+            vec!["tview", "--encoding=-t", "10", "data.csv"],
+            vec!["tview", "-q-t", "10", "data.csv"],
+            vec!["tview", "-q", "t", "10", "data.csv"],
+            vec!["tview", "--", "-t", "10"],
+            vec!["tview", "data.csv", "+2", "-t", "10"],
+            vec!["tview", "data.csv", "extra", "-t10"],
+        ] {
+            let expected: Vec<OsString> = args.iter().map(OsString::from).collect();
+            assert_eq!(
+                normalize_table_color_args(expected.clone().into_iter()),
+                expected
+            );
+        }
+        for flag in ["-it", "-ti"] {
+            assert_eq!(
+                parse(&["tview", flag, "data.csv"]),
+                parse(&["tview", "-i", "-t", "data.csv"]),
+            );
+        }
+        assert_eq!(
+            parse(&["tview", "-it", "10", "data.csv"]),
+            parse(&["tview", "-i", "-t10", "data.csv"]),
+        );
+    }
+
+    #[test]
+    fn preview_shortcuts_preserve_classic_positions_and_reject_unknown_options() {
+        let config = parse(&["tview", "data.csv", "-t", "+6:5"]);
+        assert_eq!(
+            config.start_position,
+            StartPosition {
+                row: 6,
+                column: Some(5)
+            }
+        );
+        assert_eq!(config.top_lines, None);
+        for args in [
+            vec!["tview", "data.csv", "--unknown"],
+            vec!["tview", "data.csv", "--unknown", "-t", "10"],
+        ] {
+            let error = Args::try_parse_args_from(args).expect_err("unknown option");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn table_color_numeric_filenames_require_disambiguation() {
+        for args in [vec!["tview", "-t", "--", "10"], vec!["tview", "10", "-t"]] {
+            let config = parse(&args);
+            assert_eq!(config.target, SourceTarget::from_cli_value("10"));
+            assert_eq!(config.top_lines, None);
+        }
+        assert_eq!(parse(&["tview", "-t", "./10"]).top_lines, None);
+        assert!(Args::try_parse_args_from(["tview", "-t", "10"]).is_err());
+    }
+
+    #[test]
+    fn preview_shortcuts_reject_invalid_counts_and_conflicting_limits() {
+        for flag in ["-p", "--preview", "-t", "--table-color"] {
+            for count in ["0", "99999999999999999999999999"] {
+                assert!(Args::try_parse_args_from(["tview", flag, count, "data.csv"]).is_err());
+            }
+        }
+        for count in ["", "-1", "1.5", "abc"] {
+            for flag in ["-t", "--table-color"] {
+                assert!(Args::try_parse_args_from([
+                    "tview",
+                    &format!("{flag}={count}"),
+                    "data.csv",
+                ])
+                .is_err());
+            }
+        }
+        for (option, value) in [("--sorted", "false"), ("--top-lines", "2")] {
+            assert_eq!(
+                parse_config_error(&["tview", "-t", "10", option, value, "data.csv"]),
+                CliError::ConflictingOptions {
+                    option: "--table-color <TOP_LINES>",
+                    other: option
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn help_documents_preview_shortcuts() {
+        let help = Args::command().render_long_help().to_string();
+        assert!(help.contains("--preview <TOP_LINES>"));
+        assert!(help.contains("--table-color[=<TOP_LINES>]"));
+    }
+
+    #[test]
+    fn table_color_shortcut_rejects_explicit_output_and_color_options() {
+        for flag in ["-t", "--table-color"] {
+            for (option, value) in [
+                ("--output", "table"),
+                ("--output", "json"),
+                ("--output", "jsonl"),
+                ("--color", "auto"),
+                ("--color", "always"),
+                ("--color", "never"),
+            ] {
+                for args in [
+                    vec!["tview", flag, option, value, "data.csv"],
+                    vec!["tview", option, value, flag, "data.csv"],
+                ] {
+                    let error = Args::try_parse_from(args).expect_err("conflicting options");
+                    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+                }
+            }
+        }
     }
 
     #[test]
