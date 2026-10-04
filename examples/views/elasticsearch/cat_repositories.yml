@@ -1,0 +1,27 @@
+# Repository registration inventory only; not snapshot success/recency/restore verification.
+name: cat_repositories
+filenames:
+- cat_repositories.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    id:
+      type: text
+      width: 40
+      colors:
+      - identifiers:
+          colors: auto
+    type:
+      type: text
+      width: 16
+      colors:
+      - identifiers:
+          colors: auto
+  sort:
+  - column: type
+    direction: asc
+    kind: natural
+  - column: id
+    direction: asc
+    kind: natural

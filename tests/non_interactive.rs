@@ -172,6 +172,24 @@ fn version_and_usage_have_stable_exit_codes() {
 }
 
 #[test]
+fn help_is_plain_when_redirected() {
+    for flag in ["-h", "--help"] {
+        tview_command()
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR_FORCE")
+            .env("CLICOLOR", "1")
+            .env("TERM", "xterm-256color")
+            .arg(flag)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Usage:"))
+            .stdout(predicate::str::contains("--table-color"))
+            .stdout(predicate::str::contains("\u{1b}[").not())
+            .stderr("");
+    }
+}
+
+#[test]
 fn stdin_pipeline_preserves_keyed_object_modes() {
     let input = r#"{"alpha":{"stars":1},"beta":{"stars":2},"gamma":{"stars":3}}"#;
 
@@ -239,6 +257,62 @@ fn color_is_plain_by_default_and_opt_in() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\u{1b}["));
+}
+
+#[test]
+fn table_color_shortcut_matches_explicit_ansi_output() {
+    let input = "Name,Count\nalpha,2\nbeta,10\n";
+    let file = fixture(input, ".csv");
+    let expected = tview_command()
+        .args(["--color", "always", "--output", "table"])
+        .arg(file.path())
+        .assert()
+        .success()
+        .stderr("")
+        .stdout(predicate::str::contains("\u{1b}["))
+        .get_output()
+        .stdout
+        .clone();
+
+    for flag in ["-t", "--table-color"] {
+        tview_command()
+            .arg(flag)
+            .arg(file.path())
+            .assert()
+            .success()
+            .stdout(expected.clone())
+            .stderr("");
+        tview_command()
+            .args([flag, "-"])
+            .write_stdin(input)
+            .assert()
+            .success()
+            .stdout(expected.clone())
+            .stderr("");
+    }
+}
+
+#[test]
+fn table_color_shortcut_conflicts_fail_before_reading_input() {
+    for shortcut in [
+        vec!["-t"],
+        vec!["--table-color"],
+        vec!["-t", "1"],
+        vec!["--table-color", "1"],
+        vec!["-t1"],
+        vec!["-t=1"],
+        vec!["--table-color=1"],
+    ] {
+        for (option, value) in [("--output", "json"), ("--color", "never")] {
+            tview_command()
+                .args(&shortcut)
+                .args([option, value, "-"])
+                .assert()
+                .code(2)
+                .stdout("")
+                .stderr(predicate::str::contains("cannot be used with"));
+        }
+    }
 }
 
 #[test]
@@ -394,7 +468,7 @@ fn sqlite_batch_selects_a_sole_table() {
 #[test]
 fn bundled_sqlite_sample_opens_as_one_thousand_rows() {
     let source =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample/us-counties.sqlite3");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/us-counties.sqlite3");
     let directory = tempfile::tempdir().expect("sample copy directory");
     let path = directory.path().join("us-counties.sqlite3");
     std::fs::copy(source, &path).expect("copy bundled SQLite sample");
@@ -672,6 +746,152 @@ view:
 }
 
 #[test]
+fn preview_shortcuts_match_expanded_commands_for_file_and_stdin() {
+    let input = "Name,Count\nalpha,2\nbeta,10\ngamma,3\ndelta,4\n";
+    let file = fixture(input, ".csv");
+    for stdin in [false, true] {
+        let run = |args: &[&str]| {
+            let mut command = tview_command();
+            command.args(args);
+            if stdin {
+                command.arg("-").write_stdin(input);
+            } else {
+                command.arg(file.path());
+            }
+            command
+                .assert()
+                .success()
+                .stderr("")
+                .get_output()
+                .stdout
+                .clone()
+        };
+        for (shortcuts, sorted) in [
+            (
+                vec![
+                    vec!["-p", "2"],
+                    vec!["--preview", "2"],
+                    vec!["-p2"],
+                    vec!["--preview=2"],
+                ],
+                "false",
+            ),
+            (
+                vec![
+                    vec!["-t", "2"],
+                    vec!["--table-color", "2"],
+                    vec!["-t2"],
+                    vec!["-t=2"],
+                    vec!["--table-color=2"],
+                ],
+                "true",
+            ),
+        ] {
+            let expected = run(&[
+                "--output",
+                "table",
+                "--color",
+                "always",
+                "--sorted",
+                sorted,
+                "--top-lines",
+                "2",
+            ]);
+            let text = String::from_utf8_lossy(&expected);
+            assert!(text.contains("\u{1b}["));
+            assert_eq!(text.lines().count(), 4);
+            assert!(text.contains("more rows..."));
+            for shortcut in shortcuts {
+                assert_eq!(run(&shortcut), expected, "{shortcut:?}, stdin={stdin}");
+            }
+        }
+    }
+}
+
+#[test]
+fn preview_shortcuts_reject_invalid_or_missing_counts() {
+    for args in [
+        vec!["-p"],
+        vec!["--preview"],
+        vec!["-p", "-"],
+        vec!["--preview", "-"],
+        vec!["-p", "0", "-"],
+        vec!["--preview", "-1", "-"],
+        vec!["--preview", "invalid", "-"],
+        vec!["-t", "0", "-"],
+        vec!["--table-color", "0", "-"],
+        vec!["-t0", "-"],
+        vec!["-t=invalid", "-"],
+        vec!["--table-color=invalid", "-"],
+        vec!["--table-color=-1", "-"],
+        vec!["-t=", "-"],
+        vec!["--table-color=", "-"],
+    ] {
+        tview_command()
+            .args(args)
+            .assert()
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::is_empty().not());
+    }
+}
+
+#[test]
+fn preview_shortcut_conflicts_fail_before_reading_input() {
+    for flag in ["-p", "--preview"] {
+        for option in [
+            vec!["--output", "table"],
+            vec!["--color", "auto"],
+            vec!["--color", "always"],
+            vec!["--color", "never"],
+            vec!["--sorted", "false"],
+            vec!["--sorted", "true"],
+            vec!["--top-lines", "1"],
+            vec!["-n", "1"],
+            vec!["-t"],
+            vec!["--table-color", "1"],
+            vec!["--interactive"],
+        ] {
+            tview_command()
+                .args([flag, "1"])
+                .args(option)
+                .arg("/does/not/exist")
+                .assert()
+                .code(2)
+                .stdout("")
+                .stderr(predicate::str::contains("cannot be used with"));
+        }
+    }
+}
+
+#[test]
+fn counted_table_color_shortcut_conflicts_fail_before_reading_input() {
+    for flag in ["-t", "--table-color"] {
+        for option in [
+            vec!["--sorted", "true"],
+            vec!["--sorted", "false"],
+            vec!["--top-lines", "1"],
+            vec!["-n", "1"],
+        ] {
+            tview_command()
+                .args([flag, "1"])
+                .args(option)
+                .arg("/does/not/exist")
+                .assert()
+                .code(1)
+                .stdout("")
+                .stderr(predicate::str::contains("--table-color"));
+        }
+    }
+    tview_command()
+        .args(["-it", "1", "/does/not/exist"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr(predicate::str::contains("require direct table output"));
+}
+
+#[test]
 fn preview_options_reject_non_table_modes_before_input() {
     for mode in [
         vec!["--output", "json"],
@@ -731,10 +951,19 @@ fn preview_sort_override_preserves_filters_and_saved_file() {
     let yaml = "name: preview\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    Name: {format: uppercase}\n  sort:\n    - {column: Count, direction: desc, kind: numeric}\n  filters:\n    - {column: Count, action: in, kind: numeric, condition: '>2'}\n";
     let saved = views.join("preview.yml");
     std::fs::write(&saved, yaml).unwrap();
-    let file = fixture("Name,Count\nalpha,1\nbeta,3\ngamma,5\ndelta,4\n", ".csv");
-    for (sorting, expected) in [
-        ("false", "Name  Count\nBETA      3\n2 more rows...\n"),
-        ("true", "Name   Count\nGAMMA      5\n2 more rows...\n"),
+    let input = "Name,Count\nalpha,1\nbeta,3\ngamma,5\ndelta,4\n";
+    let file = fixture(input, ".csv");
+    for (sorting, expected, shortcuts) in [
+        (
+            "false",
+            "Name  Count\nBETA      3\n2 more rows...\n",
+            ["-p", "--preview"],
+        ),
+        (
+            "true",
+            "Name   Count\nGAMMA      5\n2 more rows...\n",
+            ["-t", "--table-color"],
+        ),
     ] {
         tview_command()
             .env("XDG_CONFIG_HOME", config.path())
@@ -743,6 +972,49 @@ fn preview_sort_override_preserves_filters_and_saved_file() {
             .assert()
             .success()
             .stdout(expected);
+        let expanded = tview_command()
+            .env("XDG_CONFIG_HOME", config.path())
+            .args([
+                "--output",
+                "table",
+                "--sorted",
+                sorting,
+                "--top-lines",
+                "1",
+                "--color",
+                "always",
+            ])
+            .arg(file.path())
+            .assert()
+            .success()
+            .stderr("")
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8_lossy(&expanded);
+        let row = if sorting == "true" { "GAMMA" } else { "BETA" };
+        assert!(text.contains(row));
+        assert!(!text.contains("ALPHA"));
+        assert!(!text.contains("DELTA"));
+        assert_eq!(text.lines().count(), 3);
+        for shortcut in shortcuts {
+            for stdin in [false, true] {
+                let mut command = tview_command();
+                command
+                    .env("XDG_CONFIG_HOME", config.path())
+                    .args(["--view", "preview", shortcut, "1"]);
+                if stdin {
+                    command.arg("-").write_stdin(input);
+                } else {
+                    command.arg(file.path());
+                }
+                command
+                    .assert()
+                    .success()
+                    .stdout(expanded.clone())
+                    .stderr("");
+            }
+        }
     }
     assert_eq!(std::fs::read_to_string(saved).unwrap(), yaml);
 }

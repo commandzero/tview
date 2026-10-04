@@ -1,0 +1,29 @@
+# Safe inventory: whitespace splitting loses blank fields and splits list-valued cells.
+# Only name and the first index-pattern token are trustworthy in these CAT text files.
+# Hide ambiguous tokens instead of mislabeling them as order/version/composed_of.
+# Use --no-view for raw tokens; use structured/normalized input for full template analysis.
+name: cat_templates
+filenames:
+- cat_templates.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    '*':
+      visible: false
+    name:
+      type: text
+      width: 64
+      colors:
+      - identifiers:
+          colors: auto
+      visible: true
+    index_patterns:
+      type: text
+      width: 64
+      label: pattern (first token only)
+      visible: true
+  sort:
+  - column: name
+    direction: asc
+    kind: natural

@@ -1,0 +1,85 @@
+# UNASSIGNED first via descending state text, primaries before replicas, then largest stores.
+# Remaining state order is lexical, not severity. 200M docs is a sizing-review landmark.
+# Storage colors are relative: CAT sizes are rounded and tview interprets kb/mb/gb as SI.
+# Keep dataset: searchable-snapshot logical size can differ greatly from local store.
+name: cat_shards
+filenames:
+- cat_shards.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    index:
+      type: text
+      width: 62
+    shard:
+      type: integer
+      format: locale
+      width: 6
+      align: right
+    prirep:
+      type: text
+      width: 6
+      colors:
+      - match:
+          p: darkgreen
+          r: darkcyan
+    state:
+      type: text
+      width: 12
+      colors:
+      - match:
+          UNASSIGNED: red
+          INITIALIZING: yellow
+          RELOCATING: cyan
+          STARTED: green
+    docs:
+      type: integer
+      format: locale
+      width: 15
+      align: right
+      colors:
+      - range:
+          '>=200000000': yellow
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - gray
+          - white
+    store:
+      type: float
+      format: plain
+      width: 11
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+    dataset:
+      type: float
+      format: plain
+      width: 11
+      align: right
+    ip:
+      type: ip
+      visible: false
+    node:
+      type: text
+      width: 28
+      colors:
+      - identifiers:
+          colors: auto
+  sort:
+  - column: state
+    direction: desc
+    kind: lexical
+  - column: prirep
+    direction: asc
+    kind: lexical
+  - column: store
+    direction: desc
+    kind: numeric

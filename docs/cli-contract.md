@@ -7,6 +7,13 @@ generated: { by: codex/gpt-6, at: 2026-09-13T19:15:03Z }
 
 # CLI output and compatibility
 
+## Help
+
+`-h` / `--help` uses magenta headings, cyan option names, and green value
+placeholders on color-capable terminals. Redirected or piped help stays plain
+by default; set `NO_COLOR=1` to disable terminal help colors. Help styling is
+independent of `--color`, which controls serialized table output.
+
 ## Interactive mode and output
 
 With no mode options, Tview opens the viewer when stdout is a terminal and
@@ -16,11 +23,14 @@ writes a fixed-width table when stdout is redirected or piped.
 | --- | --- |
 | `--interactive`, `-i` | Open the viewer without exporting. |
 | `--output table`, `-o table` | Write a fixed-width text table. |
+| `--table-color [TOP_LINES]`, `-t [TOP_LINES]` | Write an ANSI-colored table, optionally limited after saved-view sorting. |
+| `--preview <TOP_LINES>`, `-p <TOP_LINES>` | Write an ANSI-colored table preview without saved-view sorting. |
 | `--output json` or `--output jsonl` | Write structured output. |
 | `--interactive --output <format>` | Open the viewer and export the final view after a normal quit. |
 
 ```sh
 tview data.csv --output table
+tview -t data.csv
 tview --interactive data.csv
 tview --interactive --output table data.csv > selected.txt
 tview --format ndjson - < records.ndjson
@@ -45,13 +55,43 @@ or the alternate screen.
 styling from the active theme. Table output does not preserve CSV or JSON
 syntax.
 
+`-t` / `--table-color` is shorthand for `--color always --output table`, including
+when output is redirected or piped. It cannot be combined with explicit
+`--color` or `--output` options. Combine it with `--interactive` (or `-it`) to
+export a colored table after quitting. Bare `-t` can still combine with
+`--top-lines` and `--sorted` for an explicitly configured colored preview.
+
 ## Fast table previews
 
-Use a row limit and skip saved-view sorting for a file-manager preview:
+Use `-p` / `--preview` for a quick preview in source order, or a count after
+`-t` / `--table-color` to apply saved-view sorting before selecting the rows:
 
 ```sh
-tview --output table --sorted false --top-lines 30 data.csv
+tview -p 10 data.csv
+tview -t 10 data.csv
 ```
+
+These are equivalent to:
+
+```sh
+tview --output table --color always --sorted false --top-lines 10 data.csv
+tview --output table --color always --sorted true --top-lines 10 data.csv
+```
+
+`-p` requires a count and always enables colors, including when redirected or
+piped. It cannot combine with `-t`, `--output`, `--color`, `--sorted`,
+`--top-lines`, or `--interactive`. For a plain unsorted preview, use
+`--output table --sorted false --top-lines 10` instead.
+
+The count after `-t` is optional: bare `-t data.csv` still writes the full colored
+table. Counted `-t` cannot combine with `--sorted`, `--top-lines`, or interactive
+mode. Attached forms such as `-p10`, `-t10`, `-t=10`, and `--table-color=10` also
+work. A separate decimal token immediately after `-t` is a count, not a filename;
+use `-t -- 10` or `-t ./10` to open a file named `10` without a limit.
+
+Sorting uses the saved view's sort keys; without any, `-t 10` retains source
+order. Sorting may read the full file before returning the top rows, whereas
+`-p 10` can stop early. Neither shortcut changes filters or native source sorting.
 
 `-n 30` is the short form of `--top-lines 30`. The limit counts data rows after
 source and view filters. The header and remaining-row summary are extra lines.

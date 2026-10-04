@@ -1,0 +1,102 @@
+# Largest total index stores first; this includes replicas, not individual shard size.
+# Deleted documents are normal merge backlog, not an instruction to force-merge.
+# rep=0 is a redundancy review cue; it can be intentional and still green.
+name: cat_indices
+filenames:
+- cat_indices.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    health:
+      type: text
+      width: 7
+      colors:
+      - match:
+          green: green
+          yellow: yellow
+          red: red
+          '-': gray
+    status:
+      type: text
+      width: 6
+      colors:
+      - match:
+          open: gray
+          close: yellow
+          closed: yellow
+    index:
+      type: text
+      width: 62
+    uuid:
+      type: text
+      visible: false
+    pri:
+      type: integer
+      format: locale
+      width: 5
+      align: right
+    rep:
+      type: integer
+      format: locale
+      width: 4
+      align: right
+      colors:
+      - match:
+          '0': yellow
+    docs.count:
+      type: integer
+      format: locale
+      width: 16
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - gray
+          - cyan
+    docs.deleted:
+      type: integer
+      format: locale
+      width: 14
+      align: right
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - yellow
+    store.size:
+      type: float
+      format: plain
+      width: 12
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+    pri.store.size:
+      type: float
+      format: plain
+      width: 14
+      align: right
+    sth:
+      type: boolean
+      visible: false
+  sort:
+  - column: store.size
+    direction: desc
+    kind: numeric
+  - column: docs.deleted
+    direction: desc
+    kind: numeric
+  - column: index
+    direction: asc
+    kind: natural

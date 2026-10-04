@@ -2399,7 +2399,7 @@ mod tests {
 
     #[test]
     fn json_fixture_matrix_covers_supported_row_shapes_and_malformed_input() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample/json");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/json");
         for name in [
             "top-level-object.json",
             "array-of-objects.json",
@@ -2421,7 +2421,7 @@ mod tests {
     fn elasticsearch_fixture_exposes_only_row_relative_hit_columns() {
         let bytes = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("sample/json/elasticsearch-response.json"),
+                .join("examples/data/json/elasticsearch-response.json"),
         )
         .expect("fixture");
         let rows = parse_json_rows(&bytes, Some(&"/hits/hits".parse().unwrap())).expect("hits");
@@ -2666,7 +2666,7 @@ mod tests {
             "keyed-nodes.json",
         ] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("sample/json")
+                .join("examples/data/json")
                 .join(name);
             let options = OpenOptions {
                 format: InputFormat::Json,

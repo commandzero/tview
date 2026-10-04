@@ -1,0 +1,52 @@
+# Alias inventory; group backing indices and highlight explicit write targets.
+# An unset write flag is not automatically an error; filter/routing stay visible.
+name: cat_aliases
+filenames:
+- cat_aliases.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    alias:
+      type: text
+      width: 54
+      colors:
+      - identifiers:
+          colors: auto
+    index:
+      type: text
+      width: 62
+    filter:
+      type: text
+      width: 6
+      colors:
+      - match:
+          '-': gray
+          '*': yellow
+    routing.index:
+      type: text
+      width: 13
+      colors:
+      - match:
+          '-': gray
+    routing.search:
+      type: text
+      width: 14
+      colors:
+      - match:
+          '-': gray
+    is_write_index:
+      type: text
+      width: 14
+      colors:
+      - match:
+          'true': green
+          'false': gray
+          '-': gray
+  sort:
+  - column: alias
+    direction: asc
+    kind: natural
+  - column: index
+    direction: asc
+    kind: natural

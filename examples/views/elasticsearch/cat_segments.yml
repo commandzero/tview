@@ -1,0 +1,81 @@
+name: cat_segments
+filenames:
+  - cat_segments.txt
+source: {}
+view:
+  columns:
+    index:
+      width: 62
+    shard:
+      width: 6
+    prirep:
+      width: 7
+      colors:
+        - match:
+            p: darkgreen
+            r: darkcyan
+    ip:
+      type: ip
+      width: 12
+      align: right
+      colors:
+        - identifiers:
+            colors: auto
+    segment:
+      width: 7
+    generation:
+      type: integer
+      format: locale
+      width: 10
+      align: right
+    docs.count:
+      type: integer
+      format: locale
+      width: 11
+      align: right
+      colors:
+        - range:
+            ">200000000": red
+        - gradient:
+            mode: auto
+            steps: 8
+            colors:
+              - green
+              - white
+    docs.deleted:
+      type: integer
+      format: locale
+      width: 12
+      align: right
+      colors:
+        - gradient:
+            mode: auto
+            steps: 8
+            colors:
+              - gray
+              - red
+    size:
+      width: 8
+    size.memory:
+      type: float
+      width: 11
+      visible: false
+      align: right
+    committed:
+      width: 9
+    searchable:
+      width: 10
+    version:
+      width: 7
+    compound:
+      width: 8
+  sort:
+    - column: size.memory
+      direction: desc
+      kind: numeric
+    - column: docs.count
+      direction: desc
+      kind: natural
+    - column: prirep
+      direction: desc
+      kind: natural

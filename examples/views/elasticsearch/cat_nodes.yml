@@ -1,0 +1,184 @@
+# Diagnostic-bundle abbreviated headers, with readable labels; heap then CPU then disk.
+# Heap 75/90 and CPU 80/95 colors are triage cues, not sustained-pressure diagnoses.
+# Load needs CPU-count context. Frozen (f) cache disks can normally be nearly full.
+# iic=indexing.index_current; sfc/sqc/scc=search fetch/query/scroll current.
+name: cat_nodes
+filenames:
+- cat_nodes.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    n:
+      type: text
+      width: 20
+      colors:
+      - identifiers:
+          colors: auto
+      label: node
+    nodeId:
+      type: text
+      visible: false
+    i:
+      type: ip
+      width: 15
+      visible: false
+    v:
+      type: semver
+      width: 8
+      label: version
+      colors:
+      - identifiers:
+          colors: auto
+    role:
+      type: text
+      width: 6
+      colors:
+      - match:
+          f: cyan
+      - identifiers:
+          colors: auto
+    m:
+      type: text
+      width: 6
+      label: master
+      colors:
+      - match:
+          '*': green
+          '-': gray
+    d:
+      type: float
+      format: plain
+      width: 10
+      align: right
+      label: disk.avail
+    dup:
+      type: float
+      format: plain
+      width: 8
+      align: right
+      label: disk.%
+      colors:
+      - range:
+          '>=95': red
+      - range:
+          '>=90': yellow
+      - range:
+          '>=85': darkyellow
+    hp:
+      type: integer
+      format: locale
+      width: 7
+      align: right
+      label: heap.%
+      colors:
+      - range:
+          '>=90': red
+      - range:
+          '>=75': yellow
+    cpu:
+      type: integer
+      format: locale
+      width: 7
+      align: right
+      label: cpu.%
+      colors:
+      - range:
+          '>=95': red
+      - range:
+          '>=80': yellow
+    load_1m:
+      type: float
+      format: plain
+      width: 8
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - gray
+          - cyan
+    load_5m:
+      type: float
+      format: plain
+      width: 8
+      align: right
+      visible: false
+    load_15m:
+      type: float
+      format: plain
+      width: 9
+      align: right
+      visible: false
+    iic:
+      type: integer
+      format: locale
+      width: 9
+      align: right
+      label: index.cur
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+    sfc:
+      type: integer
+      format: locale
+      width: 9
+      align: right
+      label: fetch.cur
+      visible: false
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+    sqc:
+      type: integer
+      format: locale
+      width: 9
+      align: right
+      label: query.cur
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+    scc:
+      type: integer
+      format: locale
+      width: 10
+      align: right
+      label: scroll.cur
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+  sort:
+  - column: hp
+    direction: desc
+    kind: numeric
+  - column: cpu
+    direction: desc
+    kind: numeric
+  - column: dup
+    direction: desc
+    kind: numeric

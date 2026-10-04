@@ -26,7 +26,7 @@ support with `--features elasticsearch`. See
 tview data.csv
 tview records.ndjson
 tview response.json --json-path /hits/hits
-tview sample/us-counties.sqlite3
+tview examples/data/us-counties.sqlite3
 tview - < data.csv
 ```
 
@@ -38,14 +38,22 @@ Redirected output defaults to a text table. Choose JSON or JSONL explicitly:
 
 ```sh
 tview data.csv > table.txt
+tview -t data.csv
+tview -p 10 data.csv
+tview -t 10 data.csv
 tview data.csv --output json > rows.json
 tview data.csv --interactive --output table > selected.txt
 ```
 
+`-t` / `--table-color` writes a colored table. Add a count (`-t 10`) to show
+only the first rows after saved-view sorting. `-p 10` / `--preview 10` skips
+saved-view sorting for a quick, colored preview in source order. Bare `-t`
+is shorthand for `--color always --output table`.
+
 The last command opens the viewer and exports your final view when you quit.
-Use a different output path from the input. JSON exports contain displayed
-strings, including saved-view formatting. See the [CLI contract](docs/cli-contract.md)
-for schemas, output behavior, and exit codes.
+Use a different output path from the input.
+JSON exports contain displayed strings, including saved-view formatting. See the
+[CLI contract](docs/cli-contract.md) for schemas, output behavior, and exit codes.
 
 ## Guides
 

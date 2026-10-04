@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn parses_utf8_sample_rows() {
         let rows = parse_rows(
-            &fixture("sample/unicode-example-utf8.txt"),
+            &fixture("examples/data/unicode-example-utf8.txt"),
             &ParseOptions::default(),
         )
         .expect("utf8 sample rows");
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn parses_latin1_sample_with_explicit_encoding() {
         let rows = parse_rows(
-            &fixture("sample/test_latin-1.csv"),
+            &fixture("examples/data/test_latin-1.csv"),
             &ParseOptions {
                 encoding: Some("latin-1".to_owned()),
                 ..ParseOptions::default()
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn parses_annotated_space_delimited_sample() {
         let rows = parse_rows(
-            &fixture("sample/commented_annotated_numeric.txt"),
+            &fixture("examples/data/commented_annotated_numeric.txt"),
             &ParseOptions {
                 encoding: Some("utf-8".to_owned()),
                 ..ParseOptions::default()
@@ -533,7 +533,7 @@ mod tests {
     #[test]
     fn parses_windows_newline_sample() {
         let rows = parse_rows(
-            &fixture("sample/windows_newlines.csv"),
+            &fixture("examples/data/windows_newlines.csv"),
             &ParseOptions::default(),
         )
         .expect("windows newline sample rows");

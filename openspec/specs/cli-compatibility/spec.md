@@ -15,11 +15,11 @@ The Rust implementation SHALL install and run as a `tview` executable.
 The Rust executable SHALL accept the existing command-line interface: positional filename, `-` for stdin, `--encoding`/`-e`, `--delimiter`/`-d`, `--quoting`, `--start_pos`/`-s`, `--width`/`-w`, `--double_width`, `--quote-char`/`-q`, and extra classic start-position arguments in `+y:x` form, plus `--format`, `--json-path`, and `--schema-scan` source options. A build with the default-enabled `sqlite` feature SHALL additionally accept `--table`.
 
 #### Scenario: Current README invocation remains valid
-- **WHEN** a user runs `tview sample/data_ohlcv.csv --start_pos 6,5 --encoding utf-8`
+- **WHEN** a user runs `tview examples/data/data_ohlcv.csv --start_pos 6,5 --encoding utf-8`
 - **THEN** the command is accepted and the viewer starts at row 6, column 5 using the requested encoding
 
 #### Scenario: Classic start position remains valid
-- **WHEN** a user runs `tview sample/data_ohlcv.csv +6:5`
+- **WHEN** a user runs `tview examples/data/data_ohlcv.csv +6:5`
 - **THEN** the viewer starts at row 6, column 5
 
 #### Scenario: Existing CSV options remain valid
@@ -95,7 +95,7 @@ The Rust executable SHALL accept `--schema-scan default|full`, using the bounded
 The Rust executable SHALL use `mode` as the default column width mode when `--width` is not provided.
 
 #### Scenario: Width omitted
-- **WHEN** a user runs `tview sample/data_ohlcv.csv` without `--width`
+- **WHEN** a user runs `tview examples/data/data_ohlcv.csv` without `--width`
 - **THEN** the viewer computes variable column widths using mode-based sizing
 
 ### Requirement: Python-style quoting names
@@ -123,19 +123,19 @@ The Rust rewrite SHALL NOT provide or promise compatibility for the upstream Pyt
 When compiled with the `saved-views` feature, the Rust executable SHALL accept saved view override arguments that force a named saved view or disable saved view application for the current invocation.
 
 #### Scenario: Force saved view
-- **WHEN** a user runs `tview --view cat-shards sample/data.csv`
+- **WHEN** a user runs `tview --view cat-shards examples/data/data_ohlcv.csv`
 - **THEN** the command is accepted and saved view selection uses the saved view named `cat-shards`
 
 #### Scenario: Force saved view with extension
-- **WHEN** a user runs `tview --view cat-shards.yml sample/data.csv`
+- **WHEN** a user runs `tview --view cat-shards.yml examples/data/data_ohlcv.csv`
 - **THEN** the command is accepted and saved view selection uses the saved view named `cat-shards`
 
 #### Scenario: Disable saved views
-- **WHEN** a user runs `tview --no-view sample/data.csv`
+- **WHEN** a user runs `tview --no-view examples/data/data_ohlcv.csv`
 - **THEN** the command is accepted and saved view discovery and application are skipped
 
 #### Scenario: Conflicting saved view flags
-- **WHEN** a user runs `tview --view cat-shards --no-view sample/data.csv`
+- **WHEN** a user runs `tview --view cat-shards --no-view examples/data/data_ohlcv.csv`
 - **THEN** argument parsing rejects the invocation with a clear error
 
 #### Scenario: Saved views feature disabled

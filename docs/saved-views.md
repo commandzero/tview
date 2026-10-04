@@ -9,9 +9,14 @@ generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
 
 Tview loads YAML views from `$XDG_CONFIG_HOME/tview/views`, or
 `~/.config/tview/views` when `XDG_CONFIG_HOME` is unset. Tview uses this path on
-every platform, including macOS. Files ending in `.yml` and `.yaml` are
-accepted. If both `name.yml` and `name.yaml` exist, `.yml` wins and a footer
-warning is shown in interactive mode; batch mode writes the warning to stderr.
+every platform, including macOS. Subdirectories are scanned recursively, so
+bundles can live in folders such as `views/elasticsearch/`. Directory symlinks
+are not followed. Files ending in `.yml` and `.yaml` are accepted.
+
+View names remain file stems, regardless of their subdirectory. Keep stems unique
+across bundles. For duplicates, `.yml` wins over `.yaml`; otherwise the first
+path in lexical order wins. A footer warning is shown in interactive mode;
+batch mode writes the warning to stderr.
 
 Views match the input basename. Remote endpoints use a name such as
 `https_elastic.example_9200` to distinguish hosts without storing credentials,
@@ -186,5 +191,5 @@ only the last extension replaced by `.yml`. Existing files ask for `y`/`n`
 confirmation. Saves are atomic and create the views directory as needed.
 
 Use the [view schema](../schemas/view.schema.json) for editor validation. See
-the [conditional-colors example](../sample/config/views/conditional-colors.yml)
+the [conditional-colors example](../examples/data/config/views/conditional-colors.yml)
 for a complete view.

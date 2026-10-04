@@ -26,13 +26,13 @@ formatting examples.
 Open it with:
 
 ```sh
-tview sample/us-counties.sqlite3
+tview examples/data/us-counties.sqlite3
 ```
 
 Or select the table explicitly:
 
 ```sh
-tview sample/us-counties.sqlite3 --table counties
+tview examples/data/us-counties.sqlite3 --table counties
 ```
 
 This sample is a subset and repackaging of Census Bureau data. It is not

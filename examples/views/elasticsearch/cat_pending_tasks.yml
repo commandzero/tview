@@ -1,0 +1,49 @@
+# Oldest queued cluster-state updates first; not search/write thread-pool work.
+# Queue-age colors are relative, not an SLA; priorities are colored, not severity-sorted.
+# Glob keys match the real headers OR generated Column 1..4 for header-only input.
+# tview currently treats a header-only file as one raw row; settings apply when tasks exist.
+name: cat_pending_tasks
+filenames:
+- cat_pending_tasks.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    "[iC]*[r1]":
+      type: integer
+      format: locale
+      width: 12
+      align: right
+    "[tC]*[e2]":
+      type: float
+      format: plain
+      width: 13
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - yellow
+    "[pC]*[y3]":
+      type: text
+      width: 10
+      colors:
+      - match:
+          IMMEDIATE: red
+          URGENT: yellow
+          HIGH: darkyellow
+          NORMAL: white
+          LOW: gray
+          LANGUID: gray
+    "[sC]*[e4]":
+      type: text
+      width: 90
+  sort:
+  - column: "[tC]*[e2]"
+    direction: desc
+    kind: numeric
+  - column: "[iC]*[r1]"
+    direction: asc
+    kind: numeric

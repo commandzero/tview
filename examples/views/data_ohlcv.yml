@@ -1,0 +1,21 @@
+name: data_ohlcv
+filenames:
+  - data_ohlcv.csv
+source: {}
+view:
+  columns:
+    Date:
+      type: date
+    Volume:
+      type: integer
+      format: locale
+  sort:
+    - column: Date
+      direction: desc
+      kind: type
+    - column: Volume
+      direction: desc
+      kind: numeric
+    - column: High
+      direction: desc
+      kind: numeric

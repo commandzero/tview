@@ -62,6 +62,32 @@ fn run_in_pty(command: &str, keys: &[u8]) -> Output {
 }
 
 #[test]
+fn help_uses_terminal_colors_and_respects_no_color() {
+    let binary = shell_quote(Path::new(env!("CARGO_BIN_EXE_tview")));
+    for flag in ["-h", "--help"] {
+        for no_color in [false, true] {
+            let setting = if no_color { "NO_COLOR=1" } else { "" };
+            let command = format!(
+                "env -u NO_COLOR -u CLICOLOR_FORCE -u CLICOLOR TERM=xterm-256color {setting} {binary} {flag}"
+            );
+            let output = run_in_pty(&command, b"");
+            assert!(output.status.success(), "output: {output:?}");
+            assert!(output.stderr.is_empty(), "output: {output:?}");
+            let help = String::from_utf8(output.stdout).expect("UTF-8 help");
+            assert!(help.contains("Usage:"));
+            assert!(help.contains("--table-color"));
+            if no_color {
+                assert!(!help.contains("\x1b["), "help: {help:?}");
+            } else {
+                for color in ["\x1b[35m", "\x1b[36m", "\x1b[32m"] {
+                    assert!(help.contains(color), "missing {color:?} in help: {help:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn interactive_export_applies_edits_and_waits_for_late_stdin() {
     let dir = tempfile::tempdir().expect("tempdir");
     let output_path = dir.path().join("output.txt");

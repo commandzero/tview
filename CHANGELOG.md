@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-03
+
+### Added
+
+- `-t` / `--table-color [TOP_LINES]` shortcut for `--color always --output table`, with an optional row count for sorted previews.
+- `-p` / `--preview <TOP_LINES>` shortcut for colored, unsorted table previews.
+- Colored `-h` / `--help` on terminals, respecting `NO_COLOR` and keeping redirected help plain.
+- Recursive saved-view discovery, allowing bundles in subdirectories of `~/.config/tview/views`.
+
 ## [0.1.0] - 2026-09-19
 
 ### Removed

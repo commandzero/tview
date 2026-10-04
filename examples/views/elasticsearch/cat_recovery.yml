@@ -1,0 +1,153 @@
+# Descending stage text puts standard active stages ahead of done, then longest duration.
+# Stage order is not a severity ranking; one capture cannot establish stalled progress.
+# Percent complete is progress, not health. Keep completed recoveries for context.
+name: cat_recovery
+filenames:
+- cat_recovery.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    index:
+      type: text
+      width: 62
+    shard:
+      type: integer
+      format: locale
+      width: 6
+      align: right
+    time:
+      type: float
+      format: plain
+      width: 10
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - gray
+          - yellow
+    type:
+      type: text
+      width: 12
+      colors:
+      - identifiers:
+          colors: auto
+    stage:
+      type: text
+      width: 12
+      colors:
+      - match:
+          done: gray
+          init: yellow
+          index: yellow
+          verify_index: cyan
+          translog: cyan
+          finalize: cyan
+    source_host:
+      type: ip
+      visible: false
+    source_node:
+      type: text
+      width: 20
+      colors:
+      - identifiers:
+          colors: auto
+    target_host:
+      type: ip
+      visible: false
+    target_node:
+      type: text
+      width: 20
+      colors:
+      - identifiers:
+          colors: auto
+    repository:
+      type: text
+      visible: false
+    snapshot:
+      type: text
+      visible: false
+    files:
+      type: integer
+      visible: false
+    files_recovered:
+      type: integer
+      visible: false
+    files_percent:
+      type: float
+      format: plain
+      width: 8
+      align: right
+      label: files.%
+      colors:
+      - gradient:
+          mode: fixed
+          stops:
+            0: yellow
+            50: white
+            100: green
+    files_total:
+      type: integer
+      visible: false
+    bytes:
+      type: float
+      format: plain
+      width: 10
+      align: right
+      visible: false
+    bytes_recovered:
+      type: float
+      format: plain
+      width: 12
+      align: right
+      label: recovered
+    bytes_percent:
+      type: float
+      format: plain
+      width: 8
+      align: right
+      label: bytes.%
+      colors:
+      - gradient:
+          mode: fixed
+          stops:
+            0: yellow
+            50: white
+            100: green
+    bytes_total:
+      type: float
+      format: plain
+      width: 12
+      align: right
+      label: total.bytes
+    translog_ops:
+      type: integer
+      visible: false
+    translog_ops_recovered:
+      type: integer
+      visible: false
+    translog_ops_percent:
+      type: float
+      format: plain
+      width: 10
+      align: right
+      label: translog.%
+      colors:
+      - gradient:
+          mode: fixed
+          stops:
+            0: yellow
+            50: white
+            100: green
+  sort:
+  - column: stage
+    direction: desc
+    kind: lexical
+  - column: time
+    direction: desc
+    kind: numeric
+  - column: index
+    direction: asc
+    kind: natural
