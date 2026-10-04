@@ -658,22 +658,22 @@ mod tests {
 
     #[test]
     fn default_width_is_mode() {
-        let config = parse(&["tview", "sample/data_ohlcv.csv"]);
+        let config = parse(&["tview", "examples/data/data_ohlcv.csv"]);
         assert_eq!(config.width, ColumnWidthMode::Mode);
     }
 
     #[test]
     fn parses_composable_runtime_and_output_options() {
-        let automatic = parse(&["tview", "sample/data_ohlcv.csv"]);
+        let automatic = parse(&["tview", "examples/data/data_ohlcv.csv"]);
         assert!(!automatic.interactive);
         assert_eq!(automatic.output, None);
         assert_eq!(automatic.color, ColorOutput::Auto);
 
-        let interactive = parse(&["tview", "-i", "sample/data_ohlcv.csv"]);
+        let interactive = parse(&["tview", "-i", "examples/data/data_ohlcv.csv"]);
         assert!(interactive.interactive);
         assert_eq!(interactive.output, None);
 
-        let direct = parse(&["tview", "-o", "table", "sample/data_ohlcv.csv"]);
+        let direct = parse(&["tview", "-o", "table", "examples/data/data_ohlcv.csv"]);
         assert!(!direct.interactive);
         assert_eq!(direct.output, Some(OutputFormat::Table));
 
@@ -684,7 +684,7 @@ mod tests {
             "table",
             "--color",
             "always",
-            "sample/data_ohlcv.csv",
+            "examples/data/data_ohlcv.csv",
         ]);
         assert!(composed.interactive);
         assert_eq!(composed.output, Some(OutputFormat::Table));
@@ -900,22 +900,29 @@ mod tests {
     #[test]
     fn rejects_runtime_names_and_unknown_output_formats() {
         assert!(
-            Args::try_parse_from(["tview", "--output", "tui", "sample/data_ohlcv.csv"]).is_err()
-        );
-        assert!(
-            Args::try_parse_from(["tview", "--output", "markdown", "sample/data_ohlcv.csv"])
+            Args::try_parse_from(["tview", "--output", "tui", "examples/data/data_ohlcv.csv"])
                 .is_err()
         );
-        assert!(
-            Args::try_parse_from(["tview", "--color", "sometimes", "sample/data_ohlcv.csv"])
-                .is_err()
-        );
+        assert!(Args::try_parse_from([
+            "tview",
+            "--output",
+            "markdown",
+            "examples/data/data_ohlcv.csv"
+        ])
+        .is_err());
+        assert!(Args::try_parse_from([
+            "tview",
+            "--color",
+            "sometimes",
+            "examples/data/data_ohlcv.csv"
+        ])
+        .is_err());
     }
 
     #[test]
     fn rejects_zero_fixed_width() {
         assert_eq!(
-            parse_config_error(&["tview", "--width", "0", "sample/data_ohlcv.csv"]),
+            parse_config_error(&["tview", "--width", "0", "examples/data/data_ohlcv.csv"]),
             CliError::InvalidWidth {
                 value: "0".to_owned()
             }
@@ -925,7 +932,7 @@ mod tests {
     #[test]
     fn rejects_non_ascii_quote_character() {
         assert_eq!(
-            parse_config_error(&["tview", "--quote-char", "“", "sample/data_ohlcv.csv"]),
+            parse_config_error(&["tview", "--quote-char", "“", "examples/data/data_ohlcv.csv"]),
             CliError::InvalidChar {
                 what: "quote character",
                 value: "“".to_owned()
@@ -937,7 +944,7 @@ mod tests {
     fn parses_readme_start_position() {
         let config = parse(&[
             "tview",
-            "sample/data_ohlcv.csv",
+            "examples/data/data_ohlcv.csv",
             "--start_pos",
             "6,5",
             "--encoding",
@@ -956,13 +963,18 @@ mod tests {
     #[test]
     fn rejects_start_position_with_extra_components() {
         assert_eq!(
-            parse_config_error(&["tview", "--start_pos", "1,2,3", "sample/data_ohlcv.csv"]),
+            parse_config_error(&[
+                "tview",
+                "--start_pos",
+                "1,2,3",
+                "examples/data/data_ohlcv.csv"
+            ]),
             CliError::InvalidStartPosition {
                 value: "1,2,3".to_owned()
             }
         );
         assert_eq!(
-            parse_config_error(&["tview", "sample/data_ohlcv.csv", "+1:2:3"]),
+            parse_config_error(&["tview", "examples/data/data_ohlcv.csv", "+1:2:3"]),
             CliError::InvalidStartPosition {
                 value: "+1:2:3".to_owned()
             }
@@ -971,7 +983,7 @@ mod tests {
 
     #[test]
     fn parses_classic_start_position() {
-        let config = parse(&["tview", "sample/data_ohlcv.csv", "+6:5"]);
+        let config = parse(&["tview", "examples/data/data_ohlcv.csv", "+6:5"]);
         assert_eq!(
             config.start_position,
             StartPosition {
@@ -983,7 +995,7 @@ mod tests {
 
     #[test]
     fn parses_classic_row_only_start_position() {
-        let config = parse(&["tview", "sample/data_ohlcv.csv", "+6:"]);
+        let config = parse(&["tview", "examples/data/data_ohlcv.csv", "+6:"]);
         assert_eq!(
             config.start_position,
             StartPosition {
@@ -1173,7 +1185,7 @@ mod tests {
     #[test]
     fn elasticsearch_json_path_cli_opens_only_hit_rows() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("sample/json/elasticsearch-response.json");
+            .join("examples/data/json/elasticsearch-response.json");
         let fixture_arg = fixture.to_string_lossy().into_owned();
         let config = parse(&[
             "tview",
@@ -1288,13 +1300,18 @@ mod tests {
     #[cfg(feature = "saved-views")]
     #[test]
     fn parses_saved_view_selection_flags() {
-        let config = parse(&["tview", "--view", "cat-shards.yml", "sample/data.csv"]);
+        let config = parse(&[
+            "tview",
+            "--view",
+            "cat-shards.yml",
+            "examples/data/data.csv",
+        ]);
         assert_eq!(
             config.saved_view,
             SavedViewSelection::Force("cat-shards".to_owned())
         );
 
-        let config = parse(&["tview", "--no-view", "sample/data.csv"]);
+        let config = parse(&["tview", "--no-view", "examples/data/data.csv"]);
         assert_eq!(config.saved_view, SavedViewSelection::Disabled);
 
         assert!(Args::try_parse_from([
@@ -1302,7 +1319,7 @@ mod tests {
             "--view",
             "cat-shards",
             "--no-view",
-            "sample/data.csv"
+            "examples/data/data.csv"
         ])
         .is_err());
     }

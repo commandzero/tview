@@ -1,0 +1,67 @@
+# Queues first, then cumulative rejected counts, then currently active threads.
+# Rejections need sample deltas/restart awareness; queue/active are instantaneous.
+# Nonzero is an inspection cue, not proof of current saturation; capacity is absent.
+name: cat_thread_pool
+filenames:
+- cat_thread_pool.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    node_name:
+      type: text
+      width: 20
+      colors:
+      - identifiers:
+          colors: auto
+    name:
+      type: text
+      width: 38
+    active:
+      type: integer
+      format: locale
+      width: 10
+      align: right
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - cyan
+    queue:
+      type: integer
+      format: locale
+      width: 10
+      align: right
+      colors:
+      - match:
+          '0': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - yellow
+    rejected:
+      type: integer
+      format: locale
+      width: 14
+      align: right
+      colors:
+      - range:
+          '>0': yellow
+      - match:
+          '0': gray
+  sort:
+  - column: queue
+    direction: desc
+    kind: numeric
+  - column: rejected
+    direction: desc
+    kind: numeric
+  - column: active
+    direction: desc
+    kind: numeric

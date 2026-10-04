@@ -8,8 +8,8 @@ generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
 # SQLite sources
 
 ```sh
-tview sample/us-counties.sqlite3
-tview sample/us-counties.sqlite3 --format sqlite --table counties
+tview examples/data/us-counties.sqlite3
+tview examples/data/us-counties.sqlite3 --format sqlite --table counties
 ```
 
 Tview opens local SQLite files through Turso. It selects the table or compatible
@@ -65,6 +65,6 @@ text, blob, and null values can widen those hints. For tables with rowids or
 declared primary keys, Tview can track the cursor and marks across queries. It
 resets that state for views and tables without a stable key.
 
-The [sample database](../sample/us-counties.sqlite3) contains 1,000 county
-records. Its [sample guide](../sample/README.md) records the Census Bureau
+The [sample database](../examples/data/us-counties.sqlite3) contains 1,000 county
+records. Its [sample guide](../examples/data/README.md) records the Census Bureau
 source and column selection.

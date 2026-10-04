@@ -1,0 +1,53 @@
+# Largest per-node/per-field heap consumers first. Relative colors are not breaker limits.
+# Global ordinals can use fielddata; nonzero values alone do not indicate a fault.
+name: cat_fielddata
+filenames:
+- cat_fielddata.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    id:
+      type: text
+      visible: false
+    host:
+      type: text
+      visible: false
+    ip:
+      type: ip
+      visible: false
+    node:
+      type: text
+      width: 20
+      colors:
+      - identifiers:
+          colors: auto
+    field:
+      type: text
+      width: 64
+    size:
+      type: float
+      format: plain
+      width: 12
+      align: right
+      colors:
+      - match:
+          '0': gray
+      - match:
+          0b: gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - yellow
+  sort:
+  - column: size
+    direction: desc
+    kind: numeric
+  - column: node
+    direction: asc
+    kind: natural
+  - column: field
+    direction: asc
+    kind: natural

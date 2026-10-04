@@ -468,7 +468,7 @@ fn sqlite_batch_selects_a_sole_table() {
 #[test]
 fn bundled_sqlite_sample_opens_as_one_thousand_rows() {
     let source =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample/us-counties.sqlite3");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/data/us-counties.sqlite3");
     let directory = tempfile::tempdir().expect("sample copy directory");
     let path = directory.path().join("us-counties.sqlite3");
     std::fs::copy(source, &path).expect("copy bundled SQLite sample");

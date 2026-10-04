@@ -2826,7 +2826,7 @@ view:
         )
         .expect("saved view");
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("sample/json/elasticsearch-response.json");
+            .join("examples/data/json/elasticsearch-response.json");
         let options = parsed
             .view
             .merged_open_options(OpenOptions::default(), &SourceOptionOverrides::default());
@@ -2987,7 +2987,7 @@ view:
     #[test]
     fn sample_conditional_colors_fixture_parses() {
         let parsed = parse_saved_view_yaml(include_str!(
-            "../../sample/config/views/conditional-colors.yml"
+            "../../examples/data/config/views/conditional-colors.yml"
         ))
         .expect("sample saved view");
 

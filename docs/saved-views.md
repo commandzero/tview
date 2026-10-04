@@ -191,5 +191,5 @@ only the last extension replaced by `.yml`. Existing files ask for `y`/`n`
 confirmation. Saves are atomic and create the views directory as needed.
 
 Use the [view schema](../schemas/view.schema.json) for editor validation. See
-the [conditional-colors example](../sample/config/views/conditional-colors.yml)
+the [conditional-colors example](../examples/data/config/views/conditional-colors.yml)
 for a complete view.

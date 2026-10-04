@@ -107,6 +107,6 @@ Named 16-color values use tview's built-in cmdzro base palette; in truecolor
 mode they resolve to those RGB values, while `mode: ansi16` emits ANSI colors
 for the terminal palette.
 
-See the [complete sample theme](../sample/config/themes/cmdzro.yml) and [theme
+See the [complete sample theme](../examples/data/config/themes/cmdzro.yml) and [theme
 schema](../schemas/theme.schema.json). For per-column rules, see [conditional
 colors](saved-views.md#conditional-colors).

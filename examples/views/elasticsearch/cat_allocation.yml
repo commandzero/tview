@@ -1,0 +1,123 @@
+# Fullest disks first, then shard counts. 85/90/95% are default watermark landmarks.
+# Check configured watermarks/max headroom; frozen (f) cache disks can normally look full.
+# shards.undesired=-1 means unavailable, not a negative shard count.
+name: cat_allocation
+filenames:
+- cat_allocation.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    shards:
+      type: integer
+      format: locale
+      width: 8
+      align: right
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - gray
+          - cyan
+    shards.undesired:
+      type: integer
+      format: locale
+      width: 10
+      align: right
+      label: undesired
+      colors:
+      - match:
+          '-1': gray
+      - range:
+          '>0': yellow
+      - match:
+          '0': gray
+    write_load.forecast:
+      type: float
+      format: mask
+      mask: '0.00'
+      width: 11
+      align: right
+      label: write.fcst
+      colors:
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - gray
+          - cyan
+    disk.indices.forecast:
+      type: float
+      format: plain
+      width: 12
+      align: right
+      label: disk.fcst
+      visible: false
+    disk.indices:
+      type: float
+      format: plain
+      width: 12
+      align: right
+    disk.used:
+      type: float
+      format: plain
+      width: 10
+      align: right
+      visible: false
+    disk.avail:
+      type: float
+      format: plain
+      width: 11
+      align: right
+    disk.total:
+      type: float
+      format: plain
+      width: 11
+      align: right
+    disk.percent:
+      type: float
+      format: plain
+      width: 8
+      align: right
+      label: disk.%
+      colors:
+      - range:
+          '>=95': red
+      - range:
+          '>=90': yellow
+      - range:
+          '>=85': darkyellow
+    host:
+      type: text
+      visible: false
+    ip:
+      type: ip
+      visible: false
+    node:
+      type: text
+      width: 20
+      colors:
+      - match:
+          UNASSIGNED: red
+      - identifiers:
+          colors: auto
+    node.role:
+      type: text
+      width: 6
+      label: role
+      colors:
+      - match:
+          f: cyan
+      - identifiers:
+          colors: auto
+  sort:
+  - column: disk.percent
+    direction: desc
+    kind: numeric
+  - column: shards
+    direction: desc
+    kind: numeric
+  - column: node
+    direction: asc
+    kind: natural

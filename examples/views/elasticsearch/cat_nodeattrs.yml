@@ -1,0 +1,49 @@
+# Group allocation/awareness attributes by value to spot topology outliers.
+# Color differences identify values, not healthy or unhealthy zones.
+name: cat_nodeattrs
+filenames:
+- cat_nodeattrs.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    node:
+      type: text
+      width: 20
+      colors:
+      - identifiers:
+          colors: auto
+    id:
+      type: text
+      visible: false
+    pid:
+      type: integer
+      visible: false
+    host:
+      type: text
+      visible: false
+    ip:
+      type: ip
+      visible: false
+    port:
+      type: integer
+      visible: false
+    attr:
+      type: text
+      width: 32
+    value:
+      type: text
+      width: 54
+      colors:
+      - identifiers:
+          colors: auto
+  sort:
+  - column: attr
+    direction: asc
+    kind: natural
+  - column: value
+    direction: asc
+    kind: natural
+  - column: node
+    direction: asc
+    kind: natural

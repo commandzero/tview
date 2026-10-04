@@ -1,0 +1,130 @@
+# Allocation health, not an overall performance verdict. Red means unassigned primaries.
+# Yellow means reduced replica redundancy; recovery/relocation can be normal.
+name: cat_health
+filenames:
+- cat_health.txt
+source: {}
+view:
+  nulls: last
+  columns:
+    epoch:
+      type: integer
+      visible: false
+    timestamp:
+      type: text
+      width: 9
+    cluster:
+      type: text
+      visible: false
+    status:
+      type: text
+      width: 7
+      colors:
+      - match:
+          green: green
+          yellow: yellow
+          red: red
+          '-': gray
+    node.total:
+      type: integer
+      format: locale
+      width: 6
+      align: right
+      label: nodes
+    node.data:
+      type: integer
+      format: locale
+      width: 5
+      align: right
+      label: data
+    shards:
+      type: integer
+      format: locale
+      width: 8
+      align: right
+    pri:
+      type: integer
+      format: locale
+      width: 8
+      align: right
+    relo:
+      type: integer
+      format: locale
+      width: 6
+      align: right
+      colors:
+      - range:
+          '>0': cyan
+      - match:
+          '0': gray
+    init:
+      type: integer
+      format: locale
+      width: 6
+      align: right
+      colors:
+      - range:
+          '>0': cyan
+      - match:
+          '0': gray
+    unassign:
+      type: integer
+      format: locale
+      width: 9
+      align: right
+      colors:
+      - range:
+          '>0': yellow
+      - match:
+          '0': gray
+    unassign.pri:
+      type: integer
+      format: locale
+      width: 12
+      align: right
+      colors:
+      - range:
+          '>0': red
+      - match:
+          '0': gray
+    pending_tasks:
+      type: integer
+      format: locale
+      width: 8
+      align: right
+      label: pending
+      colors:
+      - range:
+          '>0': yellow
+      - match:
+          '0': gray
+    max_task_wait_time:
+      type: float
+      format: plain
+      width: 13
+      align: right
+      label: max.wait.time
+      colors:
+      - match:
+          '-': gray
+      - gradient:
+          mode: auto
+          steps: 8
+          colors:
+          - white
+          - yellow
+    active_shards_percent:
+      type: float
+      format: plain
+      width: 9
+      align: right
+      label: active.%
+      colors:
+      - range:
+          <100: yellow
+      - range:
+          '>=100': green
+  sort:
+  - column: epoch
+    direction: asc
+    kind: numeric

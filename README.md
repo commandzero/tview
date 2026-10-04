@@ -26,7 +26,7 @@ support with `--features elasticsearch`. See
 tview data.csv
 tview records.ndjson
 tview response.json --json-path /hits/hits
-tview sample/us-counties.sqlite3
+tview examples/data/us-counties.sqlite3
 tview - < data.csv
 ```
 

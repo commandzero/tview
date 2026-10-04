@@ -2041,7 +2041,7 @@ styles: nope
     #[test]
     fn sample_theme_fixture_parses() {
         let theme = parse_theme_yaml(
-            include_str!("../sample/config/themes/cmdzro.yml"),
+            include_str!("../examples/data/config/themes/cmdzro.yml"),
             TerminalColorMode::TrueColor,
         )
         .expect("sample theme");
