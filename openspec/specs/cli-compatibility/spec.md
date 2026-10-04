@@ -123,19 +123,19 @@ The Rust rewrite SHALL NOT provide or promise compatibility for the upstream Pyt
 When compiled with the `saved-views` feature, the Rust executable SHALL accept saved view override arguments that force a named saved view or disable saved view application for the current invocation.
 
 #### Scenario: Force saved view
-- **WHEN** a user runs `tview --view cat-shards examples/data/data.csv`
+- **WHEN** a user runs `tview --view cat-shards examples/data/data_ohlcv.csv`
 - **THEN** the command is accepted and saved view selection uses the saved view named `cat-shards`
 
 #### Scenario: Force saved view with extension
-- **WHEN** a user runs `tview --view cat-shards.yml examples/data/data.csv`
+- **WHEN** a user runs `tview --view cat-shards.yml examples/data/data_ohlcv.csv`
 - **THEN** the command is accepted and saved view selection uses the saved view named `cat-shards`
 
 #### Scenario: Disable saved views
-- **WHEN** a user runs `tview --no-view examples/data/data.csv`
+- **WHEN** a user runs `tview --no-view examples/data/data_ohlcv.csv`
 - **THEN** the command is accepted and saved view discovery and application are skipped
 
 #### Scenario: Conflicting saved view flags
-- **WHEN** a user runs `tview --view cat-shards --no-view examples/data/data.csv`
+- **WHEN** a user runs `tview --view cat-shards --no-view examples/data/data_ohlcv.csv`
 - **THEN** argument parsing rejects the invocation with a clear error
 
 #### Scenario: Saved views feature disabled

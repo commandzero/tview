@@ -461,7 +461,8 @@ pub fn discover_saved_views_in_dir(view_dir: &Path) -> SavedViewDiscovery {
     }
     candidates.sort_by(|left, right| {
         view_stem(left)
-            .cmp(&view_stem(right))
+            .map(view_name_key)
+            .cmp(&view_stem(right).map(view_name_key))
             .then_with(|| view_extension_priority(left).cmp(&view_extension_priority(right)))
             .then_with(|| left.cmp(right))
     });
@@ -472,7 +473,7 @@ pub fn discover_saved_views_in_dir(view_dir: &Path) -> SavedViewDiscovery {
             continue;
         };
         let canonical_name = stem.to_owned();
-        if !seen.insert(canonical_name.clone()) {
+        if !seen.insert(view_name_key(&canonical_name)) {
             discovery.warnings.push(warning(
                 path.display().to_string(),
                 format!(
@@ -1039,6 +1040,14 @@ fn wildcard_specificity(pattern: &str) -> usize {
         .chars()
         .filter(|ch| !matches!(ch, '*' | '?' | '[' | ']'))
         .count()
+}
+
+fn view_name_key(name: &str) -> String {
+    if platform_case_insensitive() {
+        name.to_ascii_lowercase()
+    } else {
+        name.to_owned()
+    }
 }
 
 fn platform_eq(left: &str, right: &str) -> bool {
@@ -2484,6 +2493,29 @@ view:
         assert_eq!(discovered.views.len(), 1);
         assert_eq!(discovered.views[0].path, dir.path().join("b/shared.yml"));
         assert_eq!(discovered.warnings.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_stems_follow_platform_case_semantics() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for relative in ["a/Foo.yaml", "b/foo.yml"] {
+            let path = dir.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).expect("bundle dir");
+            std::fs::write(
+                path,
+                "name: foo\nfilenames: [data.csv]\nsource: {}\nview: {}\n",
+            )
+            .expect("write view");
+        }
+        let discovered = discover_saved_views_in_dir(dir.path());
+        if platform_case_insensitive() {
+            assert_eq!(discovered.views.len(), 1);
+            assert_eq!(discovered.views[0].path, dir.path().join("b/foo.yml"));
+            assert_eq!(discovered.warnings.len(), 1);
+        } else {
+            assert_eq!(discovered.views.len(), 2);
+            assert!(discovered.warnings.is_empty());
+        }
     }
 
     #[cfg(unix)]

@@ -530,11 +530,10 @@ impl SqliteRows {
                     ));
                 }
                 turso::core::StepResult::Done => return Ok(None),
-                turso::core::StepResult::IO
-                | turso::core::StepResult::Yield
-                | turso::core::StepResult::Sleep { .. } => {
+                turso::core::StepResult::IO | turso::core::StepResult::Yield => {
                     self.statement._io().step()?;
                 }
+                turso::core::StepResult::Sleep { duration } => std::thread::sleep(duration),
                 turso::core::StepResult::Busy => anyhow::bail!("SQLite database is busy"),
                 turso::core::StepResult::Interrupt => {
                     anyhow::bail!("SQLite query was interrupted")
