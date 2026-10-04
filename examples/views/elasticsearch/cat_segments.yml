@@ -15,7 +15,7 @@ view:
             p: darkgreen
             r: darkcyan
     ip:
-      type: float
+      type: ip
       width: 12
       align: right
       colors:
@@ -72,7 +72,7 @@ view:
   sort:
     - column: size.memory
       direction: desc
-      kind: lexical
+      kind: numeric
     - column: docs.count
       direction: desc
       kind: natural

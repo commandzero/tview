@@ -2985,6 +2985,22 @@ view:
     }
 
     #[test]
+    fn segments_example_uses_ip_metadata_and_numeric_size_sorting() {
+        let parsed = parse_saved_view_yaml(include_str!(
+            "../../examples/views/elasticsearch/cat_segments.yml"
+        ))
+        .expect("segments saved view");
+        assert!(parsed.warnings.is_empty());
+        assert_eq!(
+            parsed.view.view.columns.get("ip").expect("ip").column_type,
+            Some(ColumnType::String(StringKind::Ip))
+        );
+        assert_eq!(parsed.view.view.sort[0].column, "size.memory");
+        assert_eq!(parsed.view.view.sort[0].kind, SortKind::Numeric);
+        assert_eq!(parsed.view.view.sort[0].direction, SortDirection::Desc);
+    }
+
+    #[test]
     fn sample_conditional_colors_fixture_parses() {
         let parsed = parse_saved_view_yaml(include_str!(
             "../../examples/data/config/views/conditional-colors.yml"

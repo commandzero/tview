@@ -40,6 +40,7 @@ columns remain available in the input.
 | `cat_pending_tasks` | The oldest queued cluster-state tasks and their priorities. |
 | `cat_recovery` | Recovery stages, elapsed time, and progress. |
 | `cat_repositories` | Registered snapshot repositories and their types. |
+| `cat_segments` | Segment document counts, deleted documents, and memory sizes. |
 | `cat_shards` | Shard states, unassigned shards, and storage sizes. |
 | `cat_templates` | Template names and the first token of each index pattern. |
 | `cat_thread_pool` | Thread-pool queues, active work, and rejection counts. |
