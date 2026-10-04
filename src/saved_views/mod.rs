@@ -3033,6 +3033,26 @@ view:
     }
 
     #[test]
+    fn ohlcv_examples_sort_volume_numerically() {
+        for input in [
+            include_str!("../../examples/views/data_ohlcv.yml"),
+            include_str!("../../examples/data/data_ohlcv.view.yml"),
+        ] {
+            let parsed = parse_saved_view_yaml(input).expect("ohlcv saved view");
+            assert!(parsed.warnings.is_empty());
+            let sort = parsed
+                .view
+                .view
+                .sort
+                .iter()
+                .find(|sort| sort.column == "Volume")
+                .expect("volume sort");
+            assert_eq!(sort.kind, SortKind::Numeric);
+            assert_eq!(sort.direction, SortDirection::Desc);
+        }
+    }
+
+    #[test]
     fn sample_conditional_colors_fixture_parses() {
         let parsed = parse_saved_view_yaml(include_str!(
             "../../examples/data/config/views/conditional-colors.yml"

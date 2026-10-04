@@ -15,7 +15,7 @@ view:
       kind: type
     - column: Volume
       direction: desc
-      kind: lexical
+      kind: numeric
     - column: High
       direction: desc
       kind: numeric
