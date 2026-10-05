@@ -9,10 +9,10 @@ A reproduced SQLite failure retains the last successful table but saves the reje
 - Deepen source-result lifecycle ownership around the existing typed `TableDefinition`/`TableStore` and revisioned query coordinator: drafts, pending requests, and committed source configuration become distinct states.
 - Publish committed source configuration together with adapter-derived active query identities, schema, rows, extent, provenance, compatible view state, and cursor/mark reconciliation only after result loading and view reconstruction succeed.
 - Save the last successful source configuration during pending or failed replacement; reload that same configuration, superseding pending work so it cannot later publish.
-- Preserve opening settings, selected relation or native base query, source operations, and effective limits, including the existing unbounded sentinel. Persist configured native input rather than composed provenance.
+- Preserve opening settings, selected relation or native base query, source operations, finite native limits, and existing unbounded file-source omission; do not introduce native unbounded-limit serialization.
 - Prevent unsafe positional migration of identity-backed column state across changed schemas; preserve adapter-proven keyed rows and reset row-bound state when identity is unavailable.
 - Make latest-revision execution, loading, and reconstruction failures equally authoritative for final export while preserving blocking-worker ownership and asynchronous supersession/shutdown.
-- Remove eager `App.open_options` mutation and caller-side reconstruction of save/reload authority instead of retaining forwarding compatibility paths. Existing CLI, YAML structure, terminal commands, and source/view semantics remain unchanged apart from the demonstrated correctness fixes.
+- Remove eager `App.open_options` mutation and caller-side reconstruction of save/reload authority instead of retaining forwarding compatibility paths. Existing CLI, YAML structure, terminal commands, and source/view semantics remain unchanged apart from the demonstrated correctness fixes; reload errors continue to end the interactive session rather than gaining a new non-fatal route.
 
 ## Capabilities
 
@@ -34,7 +34,7 @@ This change precedes saved-view binding, conditional-color deepening, and frozen
 
 ## References
 
-1. [Source request, Saved View, and reload call sites](../../../src/lib.rs), lines 1064–1116, 1316–1327, and 1415–1429; [replacement activation and serialization](../../../src/view/mod.rs), lines 700–847 and 3534–3621. The reproduced query/save/replay sequence is preserved in the [saved-view delta](specs/saved-views/spec.md).
+1. [Source request, Saved View, and reload call sites](../../../src/lib.rs): `handle_source_config_key`, `handle_saved_view_key`, and `App::reload`; [replacement activation and serialization](../../../src/view/mod.rs): `request_source_query`, `poll_source_query`, and `to_saved_view_yaml`. The reproduced query/save/replay sequence is preserved in the [saved-view delta](specs/saved-views/spec.md).
 2. [Canonical domain vocabulary](../../../CONTEXT.md).
 3. [Current source-model requirements](../../specs/table-source-model/spec.md), [saved-view requirements](../../specs/saved-views/spec.md), and [output requirements](../../specs/non-interactive-output/spec.md).
 4. [Elasticsearch/native-query design](../archive/2026-09-06-add-elasticsearch-source/design.md), [SQLite design](../archive/2026-07-26-add-turso-sqlite-support/design.md), and [active interface-updates proposal](../interface-updates/proposal.md).

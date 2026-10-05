@@ -8,7 +8,7 @@ Conditional colors currently cross the view/theme seam as private `identifier(..
 
 - Compile configured column color rules against the loaded theme once per relevant configuration and terminal mode, preserving YAML color strings only as configuration and persistence data.
 - Evaluate ordered match/range rules, fixed and automatic gradients, identifier families, aliases, and terminal fallback through one typed foreground/style interface used by both rendering consumers.
-- Make profile scope explicit: emitted rows of a frozen preview projection versus the complete configured active result. Preserve numeric parsing, raw-value losslessness, rendered-value identifiers, selection readability, and substring-only search styling.
+- Make profile scope explicit: emitted preview rows versus the existing complete-result profiling domains. Preserve numeric parsing, raw-value losslessness, each path's existing identifier/extrema interpretation, selection readability, and substring-only search styling. Do not silently correct store-backed raw-profile versus rendered-lookup discrepancies as part of the ownership refactor.
 - Replace computed-string caches with reusable resolved rule colors, gradient buckets, identifier family shades, and scoped identifier indexes. Invalidate result-dependent facts on active result/schema, presentation, or profile changes; do not eagerly style every dataset cell or perform color profiling for plain output.
 - Remove the private computed-color encoders/decoders, redundant selection paths, and their format-pinning tests rather than retaining forwarding wrappers. Retain valid YAML parser and color conversion tests and add consumer-visible parity and invalidation coverage.
 

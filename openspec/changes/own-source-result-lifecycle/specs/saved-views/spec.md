@@ -57,10 +57,10 @@ Saved-view authoring SHALL derive its entire `source` section from one committed
 - **WHEN** the committed source result uses a finite limit and pending or failed replacement requests a different limit
 - **THEN** YAML retains the committed finite limit and reopening applies that same source-result bound
 
-#### Scenario: Preserve supported unbounded result
-- **WHEN** a supported committed source result uses the existing unbounded limit sentinel
-- **THEN** generated YAML and replay preserve that effective limit rather than interpreting omission as a different adapter default
-- **AND** this uses the existing positive-integer limit field or an omission only where omission already means the same unbounded limit
+#### Scenario: Preserve existing unbounded file opening
+- **WHEN** a committed file source was opened without a finite limit and uses the existing unbounded sentinel internally
+- **THEN** generated YAML omits the limit under the existing file-source rule and replay remains unbounded
+- **AND** native-query results retain their finite committed bounds without introducing extreme-integer unbounded serialization
 
 #### Scenario: Source and view operations stay isolated
 - **WHEN** the active source has source filters and sorting and the current local view has different filters and sorting

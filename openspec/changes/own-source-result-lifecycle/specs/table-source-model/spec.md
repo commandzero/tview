@@ -63,16 +63,16 @@ The active source result SHALL retain the effective opening settings and source-
 - **WHEN** a user-supplied native base query successfully activates with structured source filters, sort keys, and a limit
 - **THEN** committed configuration retains the configured base text separately from those structured operations and the composed inspection artifact
 
-#### Scenario: Effective limit retains unbounded sentinel
-- **WHEN** a supported source result uses the existing unbounded limit sentinel rather than a positive finite bound
-- **THEN** replacement, save configuration, and reload preserve that effective unbounded choice without silently substituting the source's default limit
+#### Scenario: File opening retains unbounded omission
+- **WHEN** a file source was opened without a finite limit and uses the existing unbounded sentinel internally
+- **THEN** replacement, save configuration, and reload preserve that choice through the existing omission behavior, while query-native sources retain their supported finite bounds
 
 #### Scenario: View changes do not alter source configuration
 - **WHEN** local view filters, sorting, labels, formatting, or visibility change
 - **THEN** committed source configuration and the source-result boundary do not change and no replacement source query is requested
 
 ### Requirement: Reload committed source configuration
-Reload SHALL reopen the last committed source configuration and supersede any pending replacement before it can publish. A successful reload SHALL atomically activate a new source generation and compatible durable view state. A failed reload SHALL retain the prior committed configuration, result, and view, report its failure, and prevent superseded work from activating afterward. Reloading stdin SHALL retain its existing no-op behavior.
+Reload SHALL reopen the last committed source configuration and supersede any pending replacement before it can publish. A successful reload SHALL atomically activate a new source generation and compatible durable view state. A failed reload SHALL leave the prior committed aggregate unchanged, record the failure, and prevent superseded work from activating afterward before propagating the error through the existing fatal interactive reload route. Interactive reload failures SHALL remain fatal. Reloading stdin SHALL retain its existing no-op behavior.
 
 #### Scenario: Reload while replacement is pending
 - **WHEN** a reload is requested while a different source query is pending
@@ -89,7 +89,7 @@ Reload SHALL reopen the last committed source configuration and supersede any pe
 
 #### Scenario: Reload opening or reconstruction fails
 - **WHEN** committed source reopening, result loading, or compatible view reconstruction fails during reload
-- **THEN** the prior committed result and configuration remain usable and the reload failure is retained as the latest lifecycle outcome
+- **THEN** the prior committed result and configuration remain unchanged until normal error propagation ends the interactive session, and the reload failure is retained as the latest lifecycle outcome
 - **AND** a previously pending query cannot later activate even though reload failed
 
 #### Scenario: Reload stdin

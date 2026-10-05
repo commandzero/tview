@@ -14,11 +14,11 @@ A selectable table, view, index, or data stream within a source.
 The source-opening choices and source-native operations that describe a requested result. It includes relation or native query selection independently of local view settings.
 
 **Committed source configuration**:
-The source configuration associated with the last successfully activated source result. A draft or pending request is not committed source configuration.
-_Avoid_: Latest requested configuration, draft configuration
+The complete source-opening choices and source-native operations associated with the last successfully activated source result, sufficient to describe reopening that result. A draft or pending request is not committed source configuration.
+_Avoid_: Source recipe, committed recipe, latest requested configuration, draft configuration
 
 **Source result**:
-The active tabular result produced by source configuration, including its schema, typed rows, extent, and query provenance when available.
+The active tabular result produced by source configuration, including its schema, typed rows, extent, and query provenance when available. “Active result” and “activated result” describe this concept's lifecycle state, not additional domain entities.
 
 **Source generation**:
 The identity scope of an opened result's rows and columns. Identities from different generations are not interchangeable.
@@ -36,7 +36,7 @@ Source-independent filtering and sorting of the active source result. It does no
 A named configuration document containing source configuration and local view settings, selected by name or input filename.
 
 **Selected saved-view snapshot**:
-The validated saved view chosen for one invocation, shared by source configuration and presentation binding. It is not a process-wide cache.
+The validated saved view chosen for one invocation, shared by source configuration and presentation binding.
 
 **Provisional schema**:
 A schema whose column discovery is incomplete. Later discovery can reveal additional columns without changing existing column identities within the source generation.

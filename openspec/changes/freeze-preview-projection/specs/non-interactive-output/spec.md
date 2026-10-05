@@ -9,9 +9,9 @@ A single source-neutral preparation owner SHALL turn an activated source result 
 - **WHEN** a configured live view is prepared without a preview limit for table, JSON, or JSONL output
 - **THEN** the projection contains the entire effective bounded result with late configuration resolved, while the live view retains its configuration, store attachments, cursor, viewport, and screen state
 
-#### Scenario: Preview projection without changing the viewer
-- **WHEN** a configured live view is prepared with a direct table preview limit
-- **THEN** the projection contains only selected rows and frozen presentation plus remainder evidence, while the live view retains its configuration, store attachments, cursor, viewport, and screen state
+#### Scenario: Direct preview does not require a viewer
+- **WHEN** an activated source result and configured local view facts are prepared with a direct table preview limit
+- **THEN** preparation needs no interactive viewer or special viewport and returns only selected rows and frozen presentation plus remainder evidence
 
 #### Scenario: Preparation failure preserves the viewer
 - **WHEN** required traversal, operation resolution, or presentation preparation fails
@@ -47,9 +47,9 @@ Tview SHALL dispatch each selected `OutputFormat` through a source-neutral outpu
 - **THEN** the same preparation owner supplies all effective bounded rows and completed schema, preserving display strings without table clipping, padding, control replacement, or ANSI styling
 
 ### Requirement: Table preview preparation
-Direct table output with `--top-lines N` SHALL emit the first N rows of the effective result, applying source operations and limits, then view filters, then enabled view sorting, before selecting the prefix. Without enabled local sorting, necessary whole-result numeric-filter profiling, or a full-schema request, file preview preparation SHALL stop after N matching rows and at most one additional matching row, with bounded parser read-ahead. It SHALL NOT complete ingestion, indexing, schema scanning, width profiling, color profiling, or row counting solely to prepare a preview. This behavior SHALL apply regardless of file size and to stdin. Filters, delayed column resolution, and locating selected nested data may require scanning more input. Enabled sorting and necessary numeric-filter profiling SHALL retain exact whole-active-result semantics even when they require full traversal. A preview limit SHALL NOT be pushed ahead of local filters or enabled local sorting into a native source query; native adapters can eagerly receive their existing bounded result but SHALL NOT expand or refill it for preview preparation.
+Direct table output with `--top-lines N` SHALL emit the first N rows of the effective result, applying source operations and limits, then view filters, then enabled view sorting, before selecting the prefix. Without enabled local sorting, an active or pending numeric view filter, or a full-schema request, file preview preparation SHALL stop after N matching rows and at most one additional matching row, with bounded parser read-ahead. It SHALL NOT complete ingestion, indexing, schema scanning, width profiling, color profiling, or row counting solely to prepare a preview. This behavior SHALL apply regardless of file size and to stdin. Filters, delayed column resolution, and locating selected nested data may require scanning more input. Enabled sorting SHALL retain exact whole-active-result semantics. Every active or pending numeric view filter SHALL retain the existing conservative whole-active-result profiling before interpretation; prefix-only numeric interpretation is not introduced. A preview limit SHALL NOT be pushed ahead of local filters or enabled local sorting into a native source query; native adapters can eagerly receive their existing bounded result but SHALL NOT expand or refill it for preview preparation.
 
-Default schema and type discovery SHALL use the selected rows and required bounded format detection. Omitted or lookahead rows SHALL NOT add preview columns or affect widths or automatic gradients. Explicit or saved full-schema scanning SHALL remain honored, including completing the active result when required even if the initial schema already appears complete. Full-schema discovery SHALL preserve existing source/view-filtered field-presence semantics: fields occurring only in rejected rows SHALL NOT become output columns; fields present in accepted rows beyond N SHALL remain eligible. Field presence SHALL use source row-presence evidence, not empty display strings, and established delimited header columns SHALL remain distinct from absent structured fields. Delayed filters SHALL apply to earlier deferred rows before selection is finalized; unresolved saved view operations at schema completion SHALL follow existing missing-column behavior, without discarding otherwise eligible rows. Automatic gradients SHALL profile emitted rows only; fixed rules and explicit widths SHALL remain honored. Plain output SHALL NOT perform color profiling. All required preparation and lookahead SHALL succeed before the first output byte. Unread trailing data SHALL NOT be validated merely to complete the preview.
+Default schema and type discovery SHALL use the selected rows and required bounded format detection. Under default scanning, omitted or lookahead rows SHALL NOT add preview columns. Under either scan policy, omitted or lookahead values SHALL NOT affect widths or automatic gradients. Explicit or saved full-schema scanning SHALL remain honored, including completing the active result when required even if the initial schema already appears complete. Full-schema discovery SHALL preserve existing source/view-filtered field-presence semantics: fields occurring only in rejected rows SHALL NOT become output columns; fields present in accepted rows beyond N SHALL remain eligible. Field presence SHALL use source row-presence evidence, not empty display strings, and established delimited header columns SHALL remain distinct from absent structured fields, subject to the existing empty view-filtered-result exception. Delayed filters SHALL apply to earlier deferred rows before selection is finalized; unresolved saved view operations at schema completion SHALL follow existing missing-column behavior, without discarding otherwise eligible rows. Automatic gradients SHALL profile emitted rows only; fixed rules and explicit widths SHALL remain honored. Plain output SHALL NOT perform color profiling. All required preparation and lookahead SHALL succeed before the first output byte. Unread trailing data SHALL NOT be validated merely to complete the preview.
 
 #### Scenario: Large unsorted file stops early
 - **WHEN** a large CSV with no filters is opened with `--output table --sorted false -n 30`
@@ -100,8 +100,8 @@ Default schema and type discovery SHALL use the selected rows and required bound
 - **THEN** the existing missing-column policy leaves otherwise eligible rows available for preview instead of discarding deferred rows
 
 #### Scenario: Numeric filtering uses late evidence
-- **WHEN** numeric filter interpretation depends on units or numeric profile evidence appearing later in the active result
-- **THEN** preparation completes the necessary active-result profiling and evaluates the filter before selecting N rows, rather than using prefix-only numeric interpretation
+- **WHEN** an active or pending numeric view filter exists, including one whose units or profile evidence appears later in the source result
+- **THEN** preparation completes the existing whole-active-result numeric profiling and evaluates the filter before selecting N rows, without inferring a prefix-sufficient fast path
 
 #### Scenario: Saved sort override includes delayed binding
 - **WHEN** `--sorted false` suppresses a saved view sort whose column appears late
@@ -126,6 +126,11 @@ Default schema and type discovery SHALL use the selected rows and required bound
 #### Scenario: Empty filtered structured result
 - **WHEN** a JSON view filter rejects every row and the resulting preview has no accepted fields
 - **THEN** rejected initial or late fields do not produce a header, stdout is empty, and there is no summary
+
+#### Scenario: Empty view-filtered delimited result
+- **WHEN** a local view filter rejects every delimited row and no source filter is active
+- **THEN** the existing empty-result policy suppresses all output columns, stdout is empty, and there is no summary even when an input header was established
+
 
 #### Scenario: Empty source-filtered delimited result
 - **WHEN** source filtering rejects every delimited row under full-schema scanning but the input has an established header

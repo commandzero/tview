@@ -139,8 +139,17 @@ The system SHALL apply column configuration sparsely using stable canonical sour
 - **WHEN** a saved sort or filter uses a canonical JSON pointer or relational occurrence key and rendered labels are ambiguous or overridden
 - **THEN** the operation binds to the identified source column without using the rendered label as identity
 
+#### Scenario: Existing unambiguous operation-header compatibility
+- **WHEN** a structured saved sort or filter uses a noncanonical case-insensitive or wildcard reference with no exact canonical or source-label match and no structured ambiguity
+- **THEN** the existing operation-header compatibility matching remains available rather than introducing new matching strictness
+
+#### Scenario: Source label survives presentation override
+- **WHEN** a structured column's rendered label is overridden and a saved operation references its unique original source display label
+- **THEN** the operation still binds through that source label, and the rendered override alone does not create a new operation-reference alias
+
+
 ### Requirement: Pending late-column configuration
-The system SHALL retain valid canonical column configuration and unresolved canonical view sort and filter references against a provisional schema until discovered or schema completion. Delayed binding SHALL preserve existing filter interpretation and numeric availability rules. Missing references and operations still unavailable or invalid at completion SHALL be ignored with one non-fatal warning per affected item.
+The system SHALL retain valid canonical column configuration and unresolved canonical view sort and filter references against a provisional schema until discovered or schema completion. Delayed binding SHALL preserve existing filter interpretation and numeric availability rules. Schema completion SHALL finalize missing references and invalid conditions with one non-fatal warning per affected item. A present numeric filter awaiting required profile preparation SHALL remain pending even after schema completion until normal profile preparation determines its definitive availability; it SHALL then be installed or ignored with one unavailable-operation warning, without indefinite retries.
 
 #### Scenario: Configured column arrives late
 - **WHEN** a saved view configures a canonical JSON pointer absent from the bounded initial scan and that pointer is discovered during later indexing
@@ -158,13 +167,22 @@ The system SHALL retain valid canonical column configuration and unresolved cano
 - **WHEN** a pending saved numeric filter's column appears but its numeric profile is not yet available under existing filter rules
 - **THEN** the filter can remain pending until normal preparation supplies the required profile, without changing numeric comparison semantics or reporting it as a missing column
 
+#### Scenario: Interactive numeric availability is finalized
+- **WHEN** schema completion and the TUI's normal column-inference step provide the current numeric profile for a present pending filter
+- **THEN** that profile outcome is definitive for interactive binding: the filter installs or produces one unavailable-operation warning and retires, without requiring an extra scan solely to bind it
+
 #### Scenario: Completion without appended columns
 - **WHEN** schema completion arrives without adding any columns and saved columns or operations are still pending
-- **THEN** each unresolved item is finalized and produces its normal non-fatal diagnostic once
+- **THEN** missing references and invalid conditions are finalized with their normal diagnostic once, while present numeric filters awaiting profile preparation retain that dependency
 
 #### Scenario: Missing and invalid items are distinguished
-- **WHEN** completion finds both an absent canonical filter column and a present column whose saved filter cannot be applied under normal filter rules
-- **THEN** diagnostics distinguish the missing reference from the invalid or unavailable operation and neither item remains indefinitely pending
+- **WHEN** schema completion and required normal profile preparation find both an absent canonical filter column and a present column whose saved filter cannot be applied under normal filter rules
+- **THEN** diagnostics distinguish the missing reference from the invalid or definitively unavailable operation and neither item remains indefinitely pending
+
+#### Scenario: Live operation edits supersede pending saved intent
+- **WHEN** the user edits or clears a seeded sort or filter while its saved late-column intent is still pending
+- **THEN** later schema progress does not restore the superseded saved intent or overwrite the live edit, while untouched pending saved settings remain eligible to resolve
+
 
 ### Requirement: Non-fatal saved view failures
 The system SHALL treat saved view loading, validation, matching, and application failures as non-fatal unless the user explicitly requests a missing view through `--view`. Initial and delayed binding SHALL use consistent diagnostics, delivered once per affected item through existing TUI warning and stderr routes, never stdout. This SHALL NOT suppress source-opening, query, ingestion, or output failures.
@@ -187,7 +205,7 @@ The system SHALL treat saved view loading, validation, matching, and application
 
 #### Scenario: Interactive warnings are not overwritten
 - **WHEN** one schema-completion event finalizes both missing column metadata and missing or invalid saved operations
-- **THEN** all warnings are retained for normal interactive diagnostic delivery rather than one status message replacing another, and later polling does not repeat them
+- **THEN** all warnings are retained for once-only stderr delivery, the existing interactive message footer shows the first new warning and an additional-warning count during the session, and later polling does not repeat them
 
 #### Scenario: Binding does not hide data errors
 - **WHEN** source opening or required output preparation fails while saved settings are being applied

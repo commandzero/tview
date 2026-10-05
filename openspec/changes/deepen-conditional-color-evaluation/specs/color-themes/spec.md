@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Cohesive conditional-color evaluation
-The system SHALL evaluate configured conditional colors consistently for the TUI and colored table output using the same ordered rule semantics and terminal fallback. Equivalent cells, presentation, theme, profile scope, and resolved terminal mode SHALL produce the same conditional foreground without changing raw or rendered values.
+The system SHALL evaluate configured conditional colors consistently for the TUI and colored table output using the existing ordered-rule, numeric, gradient, family, and raw-value preservation requirements in the saved-views capability and the existing terminal fallback rules. Equivalent cells, presentation, theme, profile scope and interpretation, and resolved terminal mode SHALL produce the same conditional foreground without changing raw or rendered values.
 
 #### Scenario: First match across both consumers
 - **WHEN** a cell satisfies both an earlier range rule and a later automatic gradient rule
@@ -41,7 +41,7 @@ The system SHALL preserve supported YAML color strings and theme aliases at the 
 - **THEN** its YAML contains those configured color strings rather than runtime identifier indexes, bucket results, or resolved terminal foregrounds
 
 ### Requirement: Scoped conditional-color profiles
-The system SHALL derive profile-dependent conditional colors from the applicable presentation scope: only emitted rows for a frozen preview projection, and the complete configured active result for complete-result rendering. Omitted, rejected, and lookahead rows SHALL NOT affect preview colors. Identifier indexing SHALL use deterministic ordering of unique nonempty rendered values within that scope.
+The system SHALL derive profile-dependent conditional colors from their supplied presentation scope: emitted rows for previews, and the applicable complete-result profiling domain for complete rendering. Omitted and lookahead rows SHALL NOT affect emitted-preview colors. Rejected-row exclusion SHALL follow the preparation owner's supplied emitted-row domain rather than color evaluation performing additional selection. Identifier indexing SHALL preserve deterministic ordering of unique nonempty profile keys and the provider's declared interpretation: rendered keys for resident/emitted profiling, raw display keys without rendered-key fallback for exact store reductions, and typed store numeric extrema with resident scalar-parsed fallback when exact numeric extrema are absent.
 
 #### Scenario: Preview gradient ignores omitted extreme
 - **WHEN** a two-row preview emits numeric values `1` and `2` and an omitted or lookahead row changes from `3` to `99999999`
@@ -62,40 +62,12 @@ The system SHALL derive profile-dependent conditional colors from the applicable
 - **WHEN** the preview emits `beta` and `gamma` and an omitted or lookahead value changes to the lexicographically earlier `alpha`
 - **THEN** the emitted identifier foregrounds remain unchanged
 
-### Requirement: Conditional numeric and family semantics
-The system SHALL preserve existing numeric scalar parsing and raw-value losslessness, fixed-gradient interval semantics, automatic-gradient bucket semantics, and identifier family generation when evaluating conditional colors. Color evaluation SHALL NOT change source types, raw values, display formatting, or saved numeric/string match configuration.
-
-#### Scenario: Fixed stop intervals are not interpolation
-- **WHEN** a fixed gradient defines stops `0: green`, `50: yellow`, and `100: red`
-- **THEN** values below `0` are unmatched, values in `[0, 50)` use green, values in `[50, 100)` use yellow, and values at or above `100` use red
-- **AND** both consumers preserve those half-open intervals rather than interpolating between stops
-
-#### Scenario: Automatic bucket boundaries
-- **WHEN** an automatic gradient with eight steps profiles numeric values from `0` to `80`
-- **THEN** values below `10` occupy the first bucket, `10` begins the second bucket, and `80` occupies the final bucket
-- **AND** the first and final buckets resolve to the configured endpoint colors with the existing RGB interpolation and terminal fallback
-
-#### Scenario: Constant and nonnumeric profile
-- **WHEN** all parseable values in an automatic-gradient scope are equal
-- **THEN** those values use the first configured color
-- **AND** nonnumeric values do not affect extrema and remain unmatched by that gradient so later matching rules can apply
-
-#### Scenario: Numeric parsing preserves cell representation
-- **WHEN** numeric conditional rules evaluate percentages, supported unit suffixes, or values interpreted using a column's time/scientific numeric profile
-- **THEN** they use the existing scalar parser and column profile rather than parsing a rounded formatted display string
-- **AND** original integer, decimal, and string cell values remain lossless for output, copy, and configuration persistence
-
-#### Scenario: Theme and saved-view identifier families
-- **WHEN** identifier rules use `colors: auto` or an explicit saved-view family list
-- **THEN** automatic families come from the active theme and explicit families override them
-- **AND** indexes cycle through families before advancing through their 16 dark-to-light shades, retain the existing dim-foreground contrast floor, and repeat only after all family/shade combinations
-
 ### Requirement: Conditional-color state freshness
 The system SHALL discard or refresh result-dependent conditional-color facts when the active result, schema, rendered presentation, rule configuration, numeric profile, or profile scope changes. Scrolling or repainting an unchanged result SHALL NOT change its conditional foregrounds.
 
-#### Scenario: Formatting changes identifier grouping
-- **WHEN** presentation changes values `alpha` and `ALPHA` to the same uppercase rendered identifier
-- **THEN** subsequent TUI and colored output cells share that identifier's foreground rather than using stale pre-formatting indexes
+#### Scenario: Formatting preserves each existing profile interpretation
+- **WHEN** presentation changes `alpha` and `ALPHA` to the same uppercase rendered identifier
+- **THEN** resident/emitted profiling groups those rendered identifiers together, while exact store profiling retains its existing raw keys and a rendered lookup absent from those keys remains uncolored
 
 #### Scenario: Active result or schema replacement
 - **WHEN** a successful replacement changes column identity, available values, numeric interpretation, or configured rules
@@ -107,14 +79,13 @@ The system SHALL discard or refresh result-dependent conditional-color facts whe
 - **THEN** complete output recomputes the applicable profile facts rather than reusing prefix-dependent indexes or extrema
 
 ### Requirement: Demand-scoped conditional-color work
-The system SHALL avoid color-specific profiling for plain table, JSON, and JSONL output, and SHALL NOT eagerly compute conditional styles for every cell of a complete dataset. Repeated colored rendering with unchanged configuration and profiles SHALL reuse resolvable rule colors, family shades, and gradient buckets instead of repeating color-list decoding or alias traversal per cell.
+The system SHALL avoid color-specific profiling for plain table, JSON, and JSONL output. Repeated colored rendering with unchanged configuration and applicable profiles SHALL preserve foregrounds without requesting additional source traversal or profile reductions solely for conditional colors.
 
 #### Scenario: Plain output does not request color profiles
 - **WHEN** an invocation applies saved conditional rules but emits plain table output with `--color never`, JSON, or JSONL
 - **THEN** no source traversal or profile reduction is requested solely to prepare conditional colors
 - **AND** required source/view operations and value formatting still execute normally
 
-#### Scenario: Repaint reuses resolved colors
+#### Scenario: Repaint preserves colors without re-profiling
 - **WHEN** the same profiled viewport or colored output rows are rendered repeatedly without a relevant state change
-- **THEN** configured color lists and alias chains are not decoded or traversed again for each cell
-- **AND** reusable color state depends on configured rules, gradient steps, family/shade combinations, and unique scoped identifiers rather than a row-by-column matrix of computed styles
+- **THEN** conditional foregrounds stay unchanged and no additional source traversal or profile reduction is requested solely to recompute conditional colors

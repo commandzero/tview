@@ -4,6 +4,7 @@
 
 ### Requirement: Latest source result activation before export
 Final interactive export SHALL await successful activation of the latest required source revision, not merely successful task execution. Execution, result-loading, and view-reconstruction failures SHALL prevent adapter bytes on stdout, produce a diagnostic on stderr, and exit nonzero. A retained prior result SHALL NOT silently substitute for a failed latest revision. Superseded revision outcomes SHALL NOT override the latest outcome.
+This source-neutral activation rule refines the existing SQLite and Elasticsearch output-query completion requirements: waiting for their latest revision includes successful activation, not task completion alone. Their adapter-specific bounded-response, partial-result, and provenance rules remain unchanged.
 
 #### Scenario: Latest replacement still pending at quit
 - **WHEN** normal interactive quit requests final output while the latest source replacement is pending
