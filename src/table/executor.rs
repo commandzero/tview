@@ -296,7 +296,7 @@ fn numeric_value(
     }
 }
 
-fn compare_typed_cells(
+pub(crate) fn compare_typed_cells(
     left: &CellValue,
     right: &CellValue,
     mode: ViewSortMode,

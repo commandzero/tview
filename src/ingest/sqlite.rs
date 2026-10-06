@@ -2462,6 +2462,7 @@ mod tests {
         let mut view =
             crate::view::TableView::from_opened_table(opened, crate::view::Viewport::new(10, 80))
                 .unwrap();
+        view.initialize_source_configuration(options).unwrap();
         view.set_view_null_placement(Some(crate::table::NullPlacement::First));
         view.apply_filter(
             1,
@@ -2476,12 +2477,7 @@ mod tests {
             crate::ops::sort::SortDirection::Ascending,
         );
 
-        let yaml = view.to_saved_view_yaml_with_source_options(
-            "events",
-            "saved.db",
-            Some("en_US"),
-            &options,
-        );
+        let yaml = view.to_saved_view_yaml("events", "saved.db", Some("en_US"));
         let parsed = crate::saved_views::parse_saved_view_yaml(&yaml).unwrap();
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
         assert_eq!(parsed.view.source.format, Some(InputFormat::Sqlite));
@@ -2511,27 +2507,26 @@ mod tests {
                 "INSERT INTO events VALUES (3, 'c')",
             ],
         );
+        let options = OpenOptions {
+            table: Some("events".to_owned()),
+            ..OpenOptions::default()
+        };
         let opened = SqliteAdapter
-            .open(
-                InputSource::Path(path),
-                &OpenOptions {
-                    table: Some("events".to_owned()),
-                    ..OpenOptions::default()
-                },
-            )
+            .open(InputSource::Path(path), &options)
             .unwrap()
             .into_implicit_table()
             .unwrap();
         let mut view =
             crate::view::TableView::from_opened_table(opened, crate::view::Viewport::new(10, 80))
                 .unwrap();
+        view.initialize_source_configuration(options).unwrap();
         view.set_mark();
         let mut query = view.active_source_query().unwrap().clone();
         query.order_by = vec![SourceSort {
             column: view.table_definition().unwrap().columns[0].id,
             direction: SortDirection::Descending,
         }];
-        assert!(view.request_source_query(query));
+        assert!(view.request_source_query(query, false));
         view.await_latest_source_query().unwrap();
         assert_eq!(view.current_raw_cell(), Some("1"));
         assert_eq!(view.cursor().row, 2);
@@ -2544,7 +2539,7 @@ mod tests {
             operator: SourceFilterOperator::Contains,
             operand: Some(SourceOperand::Text("a".to_owned())),
         });
-        assert!(view.request_source_query(invalid));
+        assert!(view.request_source_query(invalid, false));
         assert!(view.await_latest_source_query().is_err());
         assert_eq!(view.rows(), prior_rows);
     }

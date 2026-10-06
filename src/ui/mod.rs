@@ -67,6 +67,7 @@ pub fn render_table_with_theme(
     let viewport_height = visible_row_capacity(view, area);
     let viewport_width = visible_column_capacity(view, area);
     view.resize_viewport(viewport_height, viewport_width);
+    view.prepare_conditional_colors(theme);
 
     let cursor = view.cursor();
     let viewport = view.viewport();
@@ -172,14 +173,12 @@ pub fn render_table_with_theme(
                 .is_some_and(|(_, context)| context.search_match);
             let mut style = theme.style("table.cell");
             let mut should_preserve_fg = false;
-            if let Some(color_ref) = context
+            if let Some(foreground) = context
                 .as_ref()
-                .and_then(|(_, context)| context.conditional_color.as_deref())
+                .and_then(|(_, context)| context.conditional_color)
             {
-                if let Some(conditional_style) = theme.conditional_style(color_ref) {
-                    style = overlay_style(style, conditional_style);
-                    should_preserve_fg = true;
-                }
+                style = style.fg(foreground);
+                should_preserve_fg = true;
             }
             cell_styles.push(style);
             preserve_selected_fg.push(should_preserve_fg);
@@ -1280,9 +1279,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         let area = Rect::new(0, 0, 16, 5);
         let mut buffer = Buffer::empty(area);
@@ -1683,11 +1680,7 @@ view:
 "#,
         )
         .expect("saved");
-        let resolved = crate::saved_views::resolve_structured_columns(
-            &saved.view,
-            view.table_definition().expect("definition"),
-        );
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(saved.view.view, true);
 
         let area = Rect::new(0, 0, 48, 6);
         let mut initial = Buffer::empty(area);
@@ -1787,9 +1780,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         let area = Rect::new(0, 0, 20, 5);
         let mut buffer = Buffer::empty(area);
@@ -1811,6 +1802,46 @@ view:
 
     #[cfg(feature = "saved-views")]
     #[test]
+    fn selected_conditional_foreground_survives_outside_search_substring() {
+        let mut view = TableView::classify(
+            rows(&[&["Status"], &["active"], &["idle"]]),
+            Viewport::new(10, 1),
+        );
+        let saved = crate::saved_views::parse_saved_view_yaml(
+            "name: selected\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    Status:\n      colors:\n        - match:\n            active: green\n",
+        )
+        .expect("saved view");
+        view.install_saved_binding(saved.view.view, true);
+        let theme = crate::theme::default_theme();
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buffer = Buffer::empty(area);
+        render_table_with_theme(&mut view, area, &mut buffer, &theme, Some("ct"));
+
+        let selected_bg = theme.style("table.selected").bg;
+        for x in [0, 3, 4, 5] {
+            assert_eq!(buffer[(x, 3)].style().fg, Some(Color::Rgb(0, 192, 0)));
+            assert_eq!(buffer[(x, 3)].style().bg, selected_bg);
+            assert!(!buffer[(x, 3)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED));
+        }
+        for x in [1, 2] {
+            assert_eq!(
+                buffer[(x, 3)].style().fg,
+                theme.style("search.highlight").fg
+            );
+            assert_eq!(buffer[(x, 3)].style().bg, selected_bg);
+            assert!(buffer[(x, 3)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED));
+        }
+        assert_eq!(buffer[(0, 4)].style().fg, theme.style("table.cell").fg);
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
     fn search_highlight_marks_rendered_content_for_raw_only_matches() {
         let mut view = TableView::classify(rows(&[&["Count"], &["1000"]]), Viewport::new(10, 1));
         let parsed = crate::saved_views::parse_saved_view_yaml(
@@ -1827,9 +1858,7 @@ view:
 "##,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         let area = Rect::new(0, 0, 12, 5);
         let mut buffer = Buffer::empty(area);

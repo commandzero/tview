@@ -218,10 +218,19 @@ fn parse_ip_key(value: &str) -> Option<[u8; 16]> {
 }
 
 pub(crate) fn parse_bool_key(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "yes" | "y" | "1" => Some(true),
-        "false" | "no" | "n" | "0" => Some(false),
-        _ => None,
+    let value = value.trim();
+    if ["true", "yes", "y", "1"]
+        .iter()
+        .any(|case| value.eq_ignore_ascii_case(case))
+    {
+        Some(true)
+    } else if ["false", "no", "n", "0"]
+        .iter()
+        .any(|case| value.eq_ignore_ascii_case(case))
+    {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -278,10 +287,10 @@ pub(crate) fn parse_numeric_scalar(value: &str, profile: NumericColumnProfile) -
 }
 
 pub(crate) fn is_numeric_placeholder(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "null" | "n/a" | "na" | "none" | "nil" | "nan"
-    )
+    let value = value.trim();
+    ["null", "n/a", "na", "none", "nil", "nan"]
+        .iter()
+        .any(|placeholder| value.eq_ignore_ascii_case(placeholder))
 }
 
 fn parse_multi_dot_number(value: &str) -> Option<Vec<u64>> {
@@ -365,23 +374,30 @@ fn percent_suffix_multiplier(suffix: &str) -> Option<f64> {
 }
 
 fn byte_suffix_multiplier(suffix: &str) -> Option<f64> {
-    let suffix = suffix.to_ascii_lowercase();
-    match suffix.as_str() {
-        "b" | "byte" | "bytes" => Some(1.0),
-        "kb" | "kilobyte" | "kilobytes" => Some(1_000.0),
-        "mb" | "megabyte" | "megabytes" => Some(1_000_000.0),
-        "gb" | "gigabyte" | "gigabytes" => Some(1_000_000_000.0),
-        "tb" | "terabyte" | "terabytes" => Some(1_000_000_000_000.0),
-        "pb" | "petabyte" | "petabytes" => Some(1_000_000_000_000_000.0),
-        "eb" | "exabyte" | "exabytes" => Some(1_000_000_000_000_000_000.0),
-        "kib" | "kibibyte" | "kibibytes" => Some(1024.0),
-        "mib" | "mebibyte" | "mebibytes" => Some(1024.0_f64.powi(2)),
-        "gib" | "gibibyte" | "gibibytes" => Some(1024.0_f64.powi(3)),
-        "tib" | "tebibyte" | "tebibytes" => Some(1024.0_f64.powi(4)),
-        "pib" | "pebibyte" | "pebibytes" => Some(1024.0_f64.powi(5)),
-        "eib" | "exbibyte" | "exbibytes" => Some(1024.0_f64.powi(6)),
-        _ => None,
-    }
+    const BYTE_SUFFIXES: &[(&[&str], f64)] = &[
+        (&["b", "byte", "bytes"], 1.0),
+        (&["kb", "kilobyte", "kilobytes"], 1_000.0),
+        (&["mb", "megabyte", "megabytes"], 1_000_000.0),
+        (&["gb", "gigabyte", "gigabytes"], 1_000_000_000.0),
+        (&["tb", "terabyte", "terabytes"], 1_000_000_000_000.0),
+        (&["pb", "petabyte", "petabytes"], 1_000_000_000_000_000.0),
+        (&["eb", "exabyte", "exabytes"], 1_000_000_000_000_000_000.0),
+        (&["kib", "kibibyte", "kibibytes"], 1024.0),
+        (&["mib", "mebibyte", "mebibytes"], 1_048_576.0),
+        (&["gib", "gibibyte", "gibibytes"], 1_073_741_824.0),
+        (&["tib", "tebibyte", "tebibytes"], 1_099_511_627_776.0),
+        (&["pib", "pebibyte", "pebibytes"], 1_125_899_906_842_624.0),
+        (
+            &["eib", "exbibyte", "exbibytes"],
+            1_152_921_504_606_846_976.0,
+        ),
+    ];
+    BYTE_SUFFIXES.iter().find_map(|(names, multiplier)| {
+        names
+            .iter()
+            .any(|name| suffix.eq_ignore_ascii_case(name))
+            .then_some(*multiplier)
+    })
 }
 
 fn scientific_suffix_multiplier(suffix: &str, profile: NumericColumnProfile) -> Option<f64> {
@@ -400,18 +416,41 @@ fn scientific_suffix_multiplier(suffix: &str, profile: NumericColumnProfile) -> 
 }
 
 fn time_suffix_multiplier(suffix: &str, profile: NumericColumnProfile) -> Option<f64> {
-    let suffix = suffix.to_ascii_lowercase();
-    match suffix.as_str() {
-        "ns" | "nanosecond" | "nanoseconds" => Some(0.000_000_001),
-        "us" | "µs" | "μs" | "mus" | "microsecond" | "microseconds" => Some(0.000_001),
-        "ms" | "millisecond" | "milliseconds" => Some(0.001),
-        "s" | "sec" | "secs" | "second" | "seconds" => Some(1.0),
-        "m" if profile.bare_m_is_minutes() => Some(60.0),
-        "min" | "mins" | "minute" | "minutes" => Some(60.0),
-        "h" | "hr" | "hrs" | "hour" | "hours" => Some(60.0 * 60.0),
-        "d" | "day" | "days" => Some(60.0 * 60.0 * 24.0),
-        "y" | "yr" | "yrs" | "year" | "years" => Some(60.0 * 60.0 * 24.0 * 365.25),
-        _ => None,
+    let is = |name: &str| suffix.eq_ignore_ascii_case(name);
+    if is("ns") || is("nanosecond") || is("nanoseconds") {
+        Some(0.000_000_001)
+    } else if ["us", "µs", "μs", "mus", "microsecond", "microseconds"]
+        .iter()
+        .any(|name| is(name))
+    {
+        Some(0.000_001)
+    } else if is("ms") || is("millisecond") || is("milliseconds") {
+        Some(0.001)
+    } else if ["s", "sec", "secs", "second", "seconds"]
+        .iter()
+        .any(|name| is(name))
+    {
+        Some(1.0)
+    } else if (is("m") && profile.bare_m_is_minutes())
+        || ["min", "mins", "minute", "minutes"]
+            .iter()
+            .any(|name| is(name))
+    {
+        Some(60.0)
+    } else if ["h", "hr", "hrs", "hour", "hours"]
+        .iter()
+        .any(|name| is(name))
+    {
+        Some(60.0 * 60.0)
+    } else if ["d", "day", "days"].iter().any(|name| is(name)) {
+        Some(60.0 * 60.0 * 24.0)
+    } else if ["y", "yr", "yrs", "year", "years"]
+        .iter()
+        .any(|name| is(name))
+    {
+        Some(60.0 * 60.0 * 24.0 * 365.25)
+    } else {
+        None
     }
 }
 
@@ -448,16 +487,23 @@ pub(crate) fn infer_numeric_column_profile(
     rows: &[Vec<String>],
     column: usize,
 ) -> NumericColumnProfile {
+    infer_numeric_profile_from_values(
+        header,
+        rows.iter()
+            .map(|row| row.get(column).map_or("", String::as_str)),
+    )
+}
+
+pub(crate) fn infer_numeric_profile_from_values<'a>(
+    header: Option<&str>,
+    values: impl Iterator<Item = &'a str>,
+) -> NumericColumnProfile {
     if header.is_some_and(header_suggests_time) {
         return NumericColumnProfile::time();
     }
 
     let mut evidence = SuffixEvidence::default();
-
-    for row in rows.iter().take(NUMERIC_PROFILE_SAMPLE_ROWS) {
-        let Some(cell) = row.get(column).map(|cell| cell.trim()) else {
-            continue;
-        };
+    for cell in values.take(NUMERIC_PROFILE_SAMPLE_ROWS).map(str::trim) {
         if cell.is_empty() {
             continue;
         }

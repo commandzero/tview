@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,6 +5,12 @@ use std::path::{Path, PathBuf};
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 use yaml_serde::{Mapping, Value};
+
+mod conditional;
+
+pub(crate) use conditional::{
+    ColorProfileDemand, ColorProfileScope, ColumnColorProfile, CompiledColumnColors,
+};
 
 const CONFIG_FILE: &str = "config.yml";
 const THEME_DIR: &str = "themes";
@@ -109,126 +114,23 @@ impl ResolvedTheme {
             .unwrap_or_default()
     }
 
-    pub fn conditional_style(&self, color_ref: &str) -> Option<Style> {
-        if let Some(identifier) = parse_identifier_ref(color_ref) {
-            return match identifier.colors {
-                IdentifierColorRefColors::Auto => self.identifier_style(identifier.index),
-                IdentifierColorRefColors::Colors(colors) => {
-                    self.identifier_style_with_colors(identifier.index, &colors)
-                }
-            };
-        }
-        if let Some(gradient) = parse_gradient_ref(color_ref) {
-            let color = self.gradient_color(gradient).ok()?;
-            return Some(Style::default().fg(color));
-        }
-        let color = self.resolve_color_ref(color_ref).ok()?;
-        Some(Style::default().fg(color))
-    }
-
-    fn identifier_style(&self, index: usize) -> Option<Style> {
-        let rgb = self.identifier_rgb(index, &self.identifier_colors).ok()?;
-        Some(Style::default().fg(color_for_terminal(
-            ResolvedColor::Rgb {
-                r: rgb.0,
-                g: rgb.1,
-                b: rgb.2,
-                a: 255,
-            },
-            self.resolved_mode,
-        )))
-    }
-
-    fn identifier_style_with_colors(&self, index: usize, colors: &[String]) -> Option<Style> {
-        let rgb = self.identifier_rgb(index, colors).ok()?;
-        Some(Style::default().fg(color_for_terminal(
-            ResolvedColor::Rgb {
-                r: rgb.0,
-                g: rgb.1,
-                b: rgb.2,
-                a: 255,
-            },
-            self.resolved_mode,
-        )))
-    }
-
-    fn identifier_rgb(&self, index: usize, colors: &[String]) -> Result<(u8, u8, u8), ThemeError> {
-        let family_count = if colors.is_empty() {
-            DEFAULT_IDENTIFIER_COLORS.len()
-        } else {
-            colors.len()
-        };
-        let family = index % family_count;
-        let shade = (index / family_count) % IDENTIFIER_SHADES;
-        let color = if colors.is_empty() {
-            DEFAULT_IDENTIFIER_COLORS[family]
-        } else {
-            colors[family].as_str()
-        };
-        let target = self.color_ref_rgb(color)?;
-        let start = dark_identifier_rgb(target);
-        let ratio = shade as f64 / (IDENTIFIER_SHADES - 1) as f64;
-        Ok(interpolate_rgb(start, target, ratio))
-    }
-
-    fn gradient_color(&self, gradient: GradientColorRef) -> Result<Color, ThemeError> {
-        if gradient.colors.is_empty() {
-            return Err(ThemeError::Invalid(
-                "gradient color ref requires colors".to_owned(),
-            ));
-        }
-        let rgb =
-            self.interpolate_gradient_rgb(&gradient.colors, gradient.bucket, gradient.steps)?;
-        Ok(color_for_terminal(
-            ResolvedColor::Rgb {
-                r: rgb.0,
-                g: rgb.1,
-                b: rgb.2,
-                a: 255,
-            },
-            self.resolved_mode,
-        ))
-    }
-
-    fn interpolate_gradient_rgb(
-        &self,
-        colors: &[String],
-        bucket: usize,
-        steps: usize,
-    ) -> Result<(u8, u8, u8), ThemeError> {
-        if colors.len() == 1 || steps <= 1 {
-            return self.color_ref_rgb(&colors[0]);
-        }
-        let max_bucket = steps - 1;
-        let position = bucket.min(max_bucket) as f64 / max_bucket as f64;
-        let scaled = position * (colors.len() - 1) as f64;
-        let left_idx = scaled.floor() as usize;
-        let right_idx = scaled.ceil() as usize;
-        let left = self.color_ref_rgb(&colors[left_idx])?;
-        let right = self.color_ref_rgb(&colors[right_idx])?;
-        Ok(interpolate_rgb(left, right, scaled - left_idx as f64))
-    }
-
     fn color_ref_rgb(&self, color_ref: &str) -> Result<(u8, u8, u8), ThemeError> {
-        let configured = if self.palette.contains_key(color_ref) {
-            ConfiguredColor::Alias(color_ref.to_owned())
-        } else {
-            parse_configured_color(color_ref)
-                .unwrap_or_else(|| ConfiguredColor::Alias(color_ref.to_owned()))
-        };
-        let resolved = self.resolve_configured_color(&configured, &mut BTreeSet::new())?;
-        Ok(resolved_color_rgb(resolved))
+        self.resolved_color_ref(color_ref).map(resolved_color_rgb)
     }
 
     fn resolve_color_ref(&self, color_ref: &str) -> Result<Color, ThemeError> {
+        self.resolved_color_ref(color_ref)
+            .map(|resolved| color_for_terminal(resolved, self.resolved_mode))
+    }
+
+    fn resolved_color_ref(&self, color_ref: &str) -> Result<ResolvedColor, ThemeError> {
         let configured = if self.palette.contains_key(color_ref) {
             ConfiguredColor::Alias(color_ref.to_owned())
         } else {
             parse_configured_color(color_ref)
                 .unwrap_or_else(|| ConfiguredColor::Alias(color_ref.to_owned()))
         };
-        let resolved = self.resolve_configured_color(&configured, &mut BTreeSet::new())?;
-        Ok(color_for_terminal(resolved, self.resolved_mode))
+        self.resolve_configured_color(&configured, &mut BTreeSet::new())
     }
 
     fn resolve_configured_color(
@@ -1279,210 +1181,6 @@ pub enum ConditionalValue {
 
 impl Eq for ConditionalValue {}
 
-impl ConditionalColorRule {
-    pub fn color_for(
-        &self,
-        raw: &str,
-        rendered: &str,
-        numeric: Option<f64>,
-        column_min_max: Option<(f64, f64)>,
-    ) -> Option<String> {
-        self.color_ref_for(raw, rendered, numeric, column_min_max)
-            .map(Cow::into_owned)
-    }
-
-    pub fn color_ref_for<'a>(
-        &'a self,
-        raw: &str,
-        rendered: &str,
-        numeric: Option<f64>,
-        column_min_max: Option<(f64, f64)>,
-    ) -> Option<Cow<'a, str>> {
-        match self {
-            ConditionalColorRule::Match { entries } => entries
-                .iter()
-                .find(|entry| conditional_value_matches(&entry.value, raw, rendered, numeric))
-                .map(|entry| Cow::Borrowed(entry.color.as_str())),
-            ConditionalColorRule::Range { entries } => {
-                let value = numeric?;
-                entries
-                    .iter()
-                    .find(|entry| {
-                        entry.lt.is_none_or(|bound| value < bound)
-                            && entry.lte.is_none_or(|bound| value <= bound)
-                            && entry.gt.is_none_or(|bound| value > bound)
-                            && entry.gte.is_none_or(|bound| value >= bound)
-                    })
-                    .map(|entry| Cow::Borrowed(entry.color.as_str()))
-            }
-            ConditionalColorRule::FixedGradient { stops } => {
-                let value = numeric?;
-                stops
-                    .iter()
-                    .enumerate()
-                    .find(|(idx, stop)| {
-                        value >= stop.value
-                            && stops.get(idx + 1).is_none_or(|next| value < next.value)
-                    })
-                    .map(|(_, stop)| Cow::Borrowed(stop.color.as_str()))
-            }
-            ConditionalColorRule::AutoGradient { colors, steps } => {
-                let value = numeric?;
-                let (min, max) = column_min_max?;
-                if colors.is_empty() || max <= min {
-                    return colors.first().map(|color| Cow::Borrowed(color.as_str()));
-                }
-                let steps = (*steps).max(1);
-                let ratio = ((value - min) / (max - min)).clamp(0.0, 1.0);
-                let bucket = (ratio * steps as f64).floor().min((steps - 1) as f64) as usize;
-                Some(Cow::Owned(gradient_color_ref(colors, bucket, steps)))
-            }
-            ConditionalColorRule::Identifiers { .. } => None,
-        }
-    }
-}
-
-pub fn identifier_color_ref(index: usize, colors: &IdentifierColors) -> String {
-    match colors {
-        IdentifierColors::Auto => format!("identifier({index})"),
-        IdentifierColors::Colors(colors) => {
-            format!("identifier({index};{})", encode_color_list(colors))
-        }
-    }
-}
-
-pub(crate) fn gradient_color_ref(colors: &[String], bucket: usize, steps: usize) -> String {
-    format!("gradient({bucket};{steps};{})", encode_color_list(colors))
-}
-
-fn encode_color_list(colors: &[String]) -> String {
-    let mut encoded = String::new();
-    for color in colors {
-        encoded.push_str(&color.len().to_string());
-        encoded.push(':');
-        encoded.push_str(color);
-    }
-    encoded
-}
-
-fn parse_encoded_color_list(value: &str) -> Option<Vec<String>> {
-    let mut colors = Vec::new();
-    let mut cursor = 0;
-    while cursor < value.len() {
-        let colon = value[cursor..].find(':')? + cursor;
-        let len = value[cursor..colon].parse::<usize>().ok()?;
-        let start = colon + 1;
-        let end = start.checked_add(len)?;
-        let color = value.get(start..end)?;
-        if color.is_empty() {
-            return None;
-        }
-        colors.push(color.to_owned());
-        cursor = end;
-    }
-    Some(colors)
-}
-
-fn conditional_value_matches(
-    expected: &ConditionalValue,
-    raw: &str,
-    rendered: &str,
-    numeric: Option<f64>,
-) -> bool {
-    match expected {
-        ConditionalValue::Bool(expected) => {
-            parse_bool(raw).is_some_and(|actual| actual == *expected)
-                || parse_bool(rendered).is_some_and(|actual| actual == *expected)
-        }
-        ConditionalValue::Number(expected) => numeric.is_some_and(|actual| actual == *expected),
-        ConditionalValue::String(expected) => {
-            raw.eq_ignore_ascii_case(expected) || rendered == expected
-        }
-    }
-}
-
-fn parse_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "yes" | "y" | "1" => Some(true),
-        "false" | "no" | "n" | "0" => Some(false),
-        _ => None,
-    }
-}
-
-struct IdentifierColorRef {
-    index: usize,
-    colors: IdentifierColorRefColors,
-}
-
-enum IdentifierColorRefColors {
-    Auto,
-    Colors(Vec<String>),
-}
-
-fn parse_identifier_ref(value: &str) -> Option<IdentifierColorRef> {
-    let inner = value.strip_prefix("identifier(")?.strip_suffix(')')?;
-    if let Some((index, colors)) = inner.split_once(';') {
-        let colors = parse_encoded_color_list(colors)?;
-        return Some(IdentifierColorRef {
-            index: index.parse().ok()?,
-            colors: if colors.is_empty() {
-                IdentifierColorRefColors::Auto
-            } else {
-                IdentifierColorRefColors::Colors(colors)
-            },
-        });
-    }
-    let mut parts = inner.split(',');
-    let index = parts.next()?.parse().ok()?;
-    let colors = parts
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    Some(IdentifierColorRef {
-        index,
-        colors: if colors.is_empty() {
-            IdentifierColorRefColors::Auto
-        } else {
-            IdentifierColorRefColors::Colors(colors)
-        },
-    })
-}
-
-struct GradientColorRef {
-    bucket: usize,
-    steps: usize,
-    colors: Vec<String>,
-}
-
-fn parse_gradient_ref(value: &str) -> Option<GradientColorRef> {
-    let inner = value.strip_prefix("gradient(")?.strip_suffix(')')?;
-    if inner.contains(';') {
-        let mut parts = inner.splitn(3, ';');
-        let bucket = parts.next()?.parse().ok()?;
-        let steps = parts.next()?.parse().ok()?;
-        let colors = parse_encoded_color_list(parts.next()?)?;
-        return (!colors.is_empty()).then_some(GradientColorRef {
-            bucket,
-            steps,
-            colors,
-        });
-    }
-    let mut parts = inner.split(',');
-    let bucket = parts.next()?.parse().ok()?;
-    let steps = parts.next()?.parse().ok()?;
-    let colors = parts
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    (!colors.is_empty()).then_some(GradientColorRef {
-        bucket,
-        steps,
-        colors,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1530,6 +1228,27 @@ palette:
             }
         }
         theme
+    }
+
+    fn prepared_identifiers(
+        theme: &ResolvedTheme,
+        families: IdentifierColors,
+        keys: &[&str],
+    ) -> CompiledColumnColors {
+        CompiledColumnColors::prepare(
+            theme,
+            &[ConditionalColorRule::Identifiers { colors: families }],
+            ColumnColorProfile {
+                scope: ColorProfileScope::CompleteResult,
+                numeric_profile: crate::ops::sort::NumericColumnProfile::default(),
+                numeric_min_max: None,
+                identifier_indexes: keys
+                    .iter()
+                    .enumerate()
+                    .map(|(index, key)| ((*key).to_owned(), index))
+                    .collect(),
+            },
+        )
     }
 
     #[test]
@@ -1647,25 +1366,33 @@ palette:
             theme.style("popup.action").fg,
             Some(Color::Rgb(0, 255, 255))
         );
+        let profile = ColumnColorProfile {
+            scope: ColorProfileScope::CompleteResult,
+            numeric_profile: crate::ops::sort::NumericColumnProfile::default(),
+            numeric_min_max: None,
+            identifier_indexes: ["alpha", "beta", "gamma", "delta", "epsilon"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, key)| (key.to_owned(), index))
+                .collect(),
+        };
+        let colors = CompiledColumnColors::prepare(
+            &theme,
+            &[ConditionalColorRule::Identifiers {
+                colors: IdentifierColors::Auto,
+            }],
+            profile,
+        );
         assert_eq!(
-            theme
-                .conditional_style("identifier(0)")
-                .expect("identifier")
-                .fg,
+            colors.evaluate("alpha", "alpha"),
             Some(Color::Rgb(0, 128, 0))
         );
         assert_eq!(
-            theme
-                .conditional_style("identifier(1)")
-                .expect("identifier")
-                .fg,
+            colors.evaluate("beta", "beta"),
             Some(Color::Rgb(128, 0, 128))
         );
         assert_eq!(
-            theme
-                .conditional_style("identifier(4)")
-                .expect("identifier")
-                .fg,
+            colors.evaluate("epsilon", "epsilon"),
             Some(Color::Rgb(0, 136, 0))
         );
         assert_ne!(theme.style("table.cell").fg, Some(Color::Blue));
@@ -1728,25 +1455,18 @@ identifiers:
         )
         .expect("theme");
 
+        let prepared =
+            prepared_identifiers(&theme, IdentifierColors::Auto, &["alpha", "beta", "gamma"]);
         assert_eq!(
-            theme
-                .conditional_style("identifier(0)")
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("alpha", "alpha"),
             Some(Color::Rgb(128, 0, 0))
         );
         assert_eq!(
-            theme
-                .conditional_style("identifier(1)")
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("beta", "beta"),
             Some(Color::Rgb(0, 128, 0))
         );
         assert_eq!(
-            theme
-                .conditional_style("identifier(2)")
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("gamma", "gamma"),
             Some(Color::Rgb(136, 0, 0))
         );
     }
@@ -1769,27 +1489,25 @@ identifiers:
     }
 
     #[test]
-    fn explicit_identifier_ref_overrides_theme_families() {
+    fn explicit_identifier_families_override_theme_families() {
         let theme = default_theme();
-
+        let prepared = prepared_identifiers(
+            &theme,
+            IdentifierColors::Colors(vec!["#ff0000ff".to_owned(), "#00ff00ff".to_owned()]),
+            &["alpha", "beta"],
+        );
         assert_eq!(
-            theme
-                .conditional_style("identifier(0,#ff0000ff,#00ff00ff)")
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("alpha", "alpha"),
             Some(Color::Rgb(128, 0, 0))
         );
         assert_eq!(
-            theme
-                .conditional_style("identifier(1,#ff0000ff,#00ff00ff)")
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("beta", "beta"),
             Some(Color::Rgb(0, 128, 0))
         );
     }
 
     #[test]
-    fn generated_identifier_refs_allow_commas_in_color_aliases() {
+    fn punctuation_aliases_are_complete_identifier_family_names() {
         let theme = parse_theme_yaml(
             &full_theme(
                 r##"
@@ -1802,19 +1520,13 @@ identifiers:
         .expect("theme");
         let colors =
             IdentifierColors::Colors(vec!["red,alias".to_owned(), "green,alias".to_owned()]);
-
+        let prepared = prepared_identifiers(&theme, colors, &["alpha", "beta"]);
         assert_eq!(
-            theme
-                .conditional_style(&identifier_color_ref(0, &colors))
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("alpha", "alpha"),
             Some(Color::Rgb(128, 0, 0))
         );
         assert_eq!(
-            theme
-                .conditional_style(&identifier_color_ref(1, &colors))
-                .expect("identifier")
-                .fg,
+            prepared.evaluate("beta", "beta"),
             Some(Color::Rgb(0, 128, 0))
         );
     }
@@ -1859,6 +1571,18 @@ styles:
         assert!(parse_theme_yaml(invalid, TerminalColorMode::TrueColor)
             .expect_err("invalid")
             .contains("unsupported style token"));
+    }
+
+    #[test]
+    fn selected_theme_reports_alias_cycle_and_missing_target_before_rendering() {
+        let cycle = full_theme_with_text_and_style_overrides("a", "  a: b\n  b: a\n", &[]);
+        let error = parse_theme_yaml(&cycle, TerminalColorMode::TrueColor).expect_err("cycle");
+        assert!(error.contains("cyclic color alias 'a'"));
+
+        let missing = full_theme_with_text_and_style_overrides("a", "  a: missing-target\n", &[]);
+        let error =
+            parse_theme_yaml(&missing, TerminalColorMode::TrueColor).expect_err("unknown alias");
+        assert!(error.contains("unknown color alias 'missing-target'"));
     }
 
     #[test]
@@ -1921,92 +1645,32 @@ styles: nope
     }
 
     #[test]
-    fn conditional_rules_match_expected_values() {
-        let rule = ConditionalColorRule::Range {
-            entries: vec![
-                RangeEntry {
-                    lt: Some(10.0),
-                    lte: None,
-                    gt: None,
-                    gte: None,
-                    color: "red".to_owned(),
-                },
-                RangeEntry {
-                    lt: None,
-                    lte: None,
-                    gt: None,
-                    gte: Some(90.0),
-                    color: "red".to_owned(),
-                },
-            ],
-        };
-        assert_eq!(
-            rule.color_for("9", "9", Some(9.0), None),
-            Some("red".to_owned())
-        );
-        assert_eq!(rule.color_for("10", "10", Some(10.0), None), None);
-        assert_eq!(
-            rule.color_for("90", "90", Some(90.0), None),
-            Some("red".to_owned())
-        );
-
-        let rule = ConditionalColorRule::Match {
-            entries: vec![
-                MatchEntry {
-                    value: ConditionalValue::Bool(true),
-                    color: "green".to_owned(),
-                },
-                MatchEntry {
-                    value: ConditionalValue::String("p".to_owned()),
-                    color: "cyan".to_owned(),
-                },
-            ],
-        };
-        assert_eq!(
-            rule.color_for("yes", "yes", None, None),
-            Some("green".to_owned())
-        );
-        assert_eq!(
-            rule.color_for("p", "p", None, None),
-            Some("cyan".to_owned())
-        );
-    }
-
-    #[test]
     fn auto_gradient_interpolates_across_requested_steps() {
-        let colors = vec!["white".to_owned(), "red".to_owned()];
         let rule = ConditionalColorRule::AutoGradient {
-            colors: colors.clone(),
+            colors: vec!["white".to_owned(), "red".to_owned()],
             steps: 8,
         };
         let theme = default_theme();
-
-        let start = rule
-            .color_for("0", "0", Some(0.0), Some((0.0, 70.0)))
-            .expect("start");
-        let middle = rule
-            .color_for("30", "30", Some(30.0), Some((0.0, 70.0)))
-            .expect("middle");
-        let end = rule
-            .color_for("70", "70", Some(70.0), Some((0.0, 70.0)))
-            .expect("end");
-
-        assert_eq!(
-            theme.conditional_style(&start).expect("start").fg,
-            Some(Color::Rgb(255, 255, 255))
+        let prepared = CompiledColumnColors::prepare(
+            &theme,
+            &[rule],
+            ColumnColorProfile {
+                scope: ColorProfileScope::CompleteResult,
+                numeric_profile: crate::ops::sort::NumericColumnProfile::default(),
+                numeric_min_max: Some((0.0, 70.0)),
+                identifier_indexes: BTreeMap::new(),
+            },
         );
+        assert_eq!(prepared.evaluate("0", "0"), Some(Color::Rgb(255, 255, 255)));
         assert_eq!(
-            theme.conditional_style(&middle).expect("middle").fg,
+            prepared.evaluate("30", "30"),
             Some(Color::Rgb(255, 146, 146))
         );
-        assert_eq!(
-            theme.conditional_style(&end).expect("end").fg,
-            Some(Color::Rgb(255, 0, 0))
-        );
+        assert_eq!(prepared.evaluate("70", "70"), Some(Color::Rgb(255, 0, 0)));
     }
 
     #[test]
-    fn generated_gradient_refs_allow_commas_in_color_aliases() {
+    fn gradient_aliases_keep_full_punctuation_names() {
         let theme = parse_theme_yaml(
             &full_theme(
                 r##"
@@ -2021,21 +1685,18 @@ styles: nope
             colors: vec!["white,alias".to_owned(), "red,alias".to_owned()],
             steps: 2,
         };
-        let start = rule
-            .color_for("0", "0", Some(0.0), Some((0.0, 1.0)))
-            .expect("start");
-        let end = rule
-            .color_for("1", "1", Some(1.0), Some((0.0, 1.0)))
-            .expect("end");
-
-        assert_eq!(
-            theme.conditional_style(&start).expect("start").fg,
-            Some(Color::Rgb(255, 255, 255))
+        let prepared = CompiledColumnColors::prepare(
+            &theme,
+            &[rule],
+            ColumnColorProfile {
+                scope: ColorProfileScope::CompleteResult,
+                numeric_profile: crate::ops::sort::NumericColumnProfile::default(),
+                numeric_min_max: Some((0.0, 1.0)),
+                identifier_indexes: BTreeMap::new(),
+            },
         );
-        assert_eq!(
-            theme.conditional_style(&end).expect("end").fg,
-            Some(Color::Rgb(255, 0, 0))
-        );
+        assert_eq!(prepared.evaluate("0", "0"), Some(Color::Rgb(255, 255, 255)));
+        assert_eq!(prepared.evaluate("1", "1"), Some(Color::Rgb(255, 0, 0)));
     }
 
     #[test]

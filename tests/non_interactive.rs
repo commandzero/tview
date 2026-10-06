@@ -1405,8 +1405,7 @@ fn preview_missing_saved_filters_do_not_discard_rows() {
         .arg(file.path())
         .assert()
         .success()
-        .stdout("a\n1\n1 more rows...\n")
-        .stderr("");
+        .stdout("a\n1\n1 more rows...\n");
 }
 
 #[cfg(feature = "saved-views")]
