@@ -4,8 +4,7 @@ use clap::ValueEnum;
 use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthChar;
 
-use crate::theme::ResolvedTheme;
-use crate::view::{ColumnAlignment, TableView};
+use crate::view::ColumnAlignment;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -48,39 +47,32 @@ pub fn resolve_execution_mode(
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutputRequirements {
-    pub complete_rows: bool,
     pub stable_widths: bool,
-    pub rendered_values: bool,
     pub conditional_styles: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedColumn {
     pub alignment: ColumnAlignment,
-    pub width_override: Option<usize>,
+    pub width: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedCell {
     pub text: String,
-    pub style: Style,
+    pub foreground: Option<Color>,
 }
 
-pub trait PreparedRows {
-    fn len(&self) -> usize;
-    fn row(&self, index: usize) -> Vec<PreparedCell>;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-pub struct PreparedOutput<'a> {
+/// Frozen, owned presentation. No row source, view, or profiling callback is
+/// retained by the serializer.
+pub struct PreparedOutput {
     pub header_visible: bool,
     pub header: Vec<PreparedCell>,
-    pub rows: Box<dyn PreparedRows + 'a>,
+    pub rows: Vec<Vec<PreparedCell>>,
     pub columns: Vec<PreparedColumn>,
     pub gap: usize,
+    pub header_style: Style,
+    pub cell_style: Style,
 }
 
 pub trait OutputAdapter {
@@ -88,7 +80,7 @@ pub trait OutputAdapter {
     fn supports_color(&self) -> bool;
     fn write(
         &self,
-        prepared: &PreparedOutput<'_>,
+        prepared: &PreparedOutput,
         color: ColorOutput,
         writer: &mut dyn Write,
     ) -> io::Result<()>;
@@ -102,9 +94,7 @@ pub struct FixedWidthTableAdapter {
 impl OutputAdapter for FixedWidthTableAdapter {
     fn requirements(&self) -> OutputRequirements {
         OutputRequirements {
-            complete_rows: true,
             stable_widths: true,
-            rendered_values: true,
             conditional_styles: true,
         }
     }
@@ -115,40 +105,29 @@ impl OutputAdapter for FixedWidthTableAdapter {
 
     fn write(
         &self,
-        prepared: &PreparedOutput<'_>,
+        prepared: &PreparedOutput,
         color: ColorOutput,
         writer: &mut dyn Write,
     ) -> io::Result<()> {
-        let normalized_header = prepared
-            .header
-            .iter()
-            .map(|cell| PreparedCell {
-                text: normalize_controls(&cell.text),
-                style: cell.style,
-            })
-            .collect::<Vec<_>>();
-        let widths = resolved_widths(&normalized_header, prepared);
-        let gap = vec![b' '; prepared.gap];
-
-        if prepared.header_visible && !normalized_header.is_empty() {
+        let gap = prepared.gap;
+        if prepared.header_visible && !prepared.header.is_empty() {
             write_line(
                 writer,
-                &normalized_header,
+                &prepared.header,
                 &prepared.columns,
-                &widths,
-                &gap,
+                prepared.header_style,
+                gap,
                 color,
                 self.trim_trailing,
             )?;
         }
-        for row_index in 0..prepared.rows.len() {
-            let row = normalize_row(prepared.rows.row(row_index));
+        for row in &prepared.rows {
             write_line(
                 writer,
-                &row,
+                row,
                 &prepared.columns,
-                &widths,
-                &gap,
+                prepared.cell_style,
+                gap,
                 color,
                 self.trim_trailing,
             )?;
@@ -157,11 +136,16 @@ impl OutputAdapter for FixedWidthTableAdapter {
     }
 }
 
-fn adapter(format: OutputFormat) -> Box<dyn OutputAdapter> {
+fn adapter(format: OutputFormat) -> &'static dyn OutputAdapter {
+    static TABLE: FixedWidthTableAdapter = FixedWidthTableAdapter {
+        trim_trailing: false,
+    };
+    static JSON: JsonAdapter = JsonAdapter { lines: false };
+    static JSONL: JsonAdapter = JsonAdapter { lines: true };
     match format {
-        OutputFormat::Table => Box::<FixedWidthTableAdapter>::default(),
-        OutputFormat::Json => Box::new(JsonAdapter { lines: false }),
-        OutputFormat::Jsonl => Box::new(JsonAdapter { lines: true }),
+        OutputFormat::Table => &TABLE,
+        OutputFormat::Json => &JSON,
+        OutputFormat::Jsonl => &JSONL,
     }
 }
 
@@ -171,13 +155,23 @@ struct JsonAdapter {
     lines: bool,
 }
 
+/// Serialize frozen presentation strings without copying their contents.
+struct PreparedValues<'a>(&'a [PreparedCell]);
+
+impl serde::Serialize for PreparedValues<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for cell in self.0 {
+            sequence.serialize_element(&cell.text)?;
+        }
+        sequence.end()
+    }
+}
+
 impl OutputAdapter for JsonAdapter {
     fn requirements(&self) -> OutputRequirements {
-        OutputRequirements {
-            complete_rows: true,
-            rendered_values: true,
-            ..OutputRequirements::default()
-        }
+        OutputRequirements::default()
     }
 
     fn supports_color(&self) -> bool {
@@ -186,7 +180,7 @@ impl OutputAdapter for JsonAdapter {
 
     fn write(
         &self,
-        prepared: &PreparedOutput<'_>,
+        prepared: &PreparedOutput,
         _color: ColorOutput,
         writer: &mut dyn Write,
     ) -> io::Result<()> {
@@ -204,24 +198,18 @@ impl OutputAdapter for JsonAdapter {
             serde_json::to_writer(&mut *writer, &columns)?;
             writer.write_all(b",\"rows\":[")?;
         }
-        for index in 0..prepared.rows.len() {
-            let row: Vec<String> = prepared
-                .rows
-                .row(index)
-                .into_iter()
-                .map(|cell| cell.text)
-                .collect();
+        for (index, row) in prepared.rows.iter().enumerate() {
             if self.lines {
                 #[derive(serde::Serialize)]
                 struct Record<'a> {
                     columns: &'a [&'a str],
-                    values: &'a [String],
+                    values: PreparedValues<'a>,
                 }
                 serde_json::to_writer(
                     &mut *writer,
                     &Record {
                         columns: &columns,
-                        values: &row,
+                        values: PreparedValues(row),
                     },
                 )?;
                 writer.write_all(b"\n")?;
@@ -229,7 +217,7 @@ impl OutputAdapter for JsonAdapter {
                 if index != 0 {
                     writer.write_all(b",")?;
                 }
-                serde_json::to_writer(&mut *writer, &row)?;
+                serde_json::to_writer(&mut *writer, &PreparedValues(row))?;
             }
         }
         if !self.lines {
@@ -239,68 +227,62 @@ impl OutputAdapter for JsonAdapter {
     }
 }
 
-pub fn write_view(
+/// Reject unsupported adapter capabilities before opening a source.
+pub fn requirements(
     format: OutputFormat,
     color: ColorOutput,
-    view: &mut TableView,
-    theme: &ResolvedTheme,
-    writer: &mut dyn Write,
-) -> anyhow::Result<()> {
-    let adapter = adapter(format);
-    if color == ColorOutput::Always && !adapter.supports_color() {
+) -> anyhow::Result<OutputRequirements> {
+    let selected = adapter(format);
+    if color == ColorOutput::Always && !selected.supports_color() {
         anyhow::bail!("output format does not support --color always");
     }
-    let mut requirements = adapter.requirements();
+    let mut requirements = selected.requirements();
     requirements.conditional_styles &= color == ColorOutput::Always;
-    let prepared = prepare(view, theme, requirements)?;
-    match adapter.write(&prepared, color, writer) {
+    Ok(requirements)
+}
+
+/// Serializers receive only the owned presentation supplied by projection.
+pub fn write_prepared(
+    format: OutputFormat,
+    color: ColorOutput,
+    prepared: &PreparedOutput,
+    preview_remaining: Option<Option<crate::table::RowCount>>,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let result = (|| -> io::Result<()> {
+        if let Some(remaining) = preview_remaining {
+            FixedWidthTableAdapter {
+                trim_trailing: true,
+            }
+            .write(prepared, color, writer)?;
+            match remaining {
+                Some(crate::table::RowCount::Exact(count)) => {
+                    writeln!(writer, "{count} more rows...")
+                }
+                Some(_) => writeln!(writer, "more rows..."),
+                None => Ok(()),
+            }
+        } else {
+            adapter(format).write(prepared, color, writer)
+        }
+    })();
+    match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
 
-pub fn write_view_to_stdout(
+pub fn write_prepared_to_stdout(
     format: OutputFormat,
     color: ColorOutput,
-    view: &mut TableView,
-    theme: &ResolvedTheme,
+    prepared: &PreparedOutput,
+    preview_remaining: Option<Option<crate::table::RowCount>>,
 ) -> anyhow::Result<()> {
     let stdout = io::stdout();
     let mut writer = BufWriter::new(stdout.lock());
-    write_view(format, color, view, theme, &mut writer)?;
+    write_prepared(format, color, prepared, preview_remaining, &mut writer)?;
     flush_output(&mut writer)
-}
-
-pub(crate) fn write_preview_to_stdout(
-    color: ColorOutput,
-    view: &mut TableView,
-    theme: &ResolvedTheme,
-    remaining: Option<crate::table::RowCount>,
-) -> anyhow::Result<()> {
-    let stdout = io::stdout();
-    let mut writer = BufWriter::new(stdout.lock());
-    let requirements = OutputRequirements {
-        conditional_styles: color == ColorOutput::Always,
-        ..OutputRequirements::default()
-    };
-    let prepared = prepare(view, theme, requirements)?;
-    let result = (|| -> io::Result<()> {
-        FixedWidthTableAdapter {
-            trim_trailing: true,
-        }
-        .write(&prepared, color, &mut writer)?;
-        match remaining {
-            Some(crate::table::RowCount::Exact(count)) => writeln!(writer, "{count} more rows..."),
-            Some(_) => writeln!(writer, "more rows..."),
-            None => Ok(()),
-        }
-    })();
-    match result {
-        Ok(()) => flush_output(&mut writer),
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn flush_output(writer: &mut dyn Write) -> anyhow::Result<()> {
@@ -311,133 +293,49 @@ fn flush_output(writer: &mut dyn Write) -> anyhow::Result<()> {
     }
 }
 
-fn prepare<'a>(
-    view: &'a mut TableView,
-    theme: &'a ResolvedTheme,
-    requirements: OutputRequirements,
-) -> anyhow::Result<PreparedOutput<'a>> {
-    if requirements.complete_rows {
-        view.complete_for_output_with_color(requirements.conditional_styles)?;
+/// Table escaping is frozen with the selected presentation, not recomputed by
+/// the serializer. Ordinary cells reuse their owned string without copying.
+pub(crate) fn freeze_table_cell(text: String) -> String {
+    if text.chars().any(char::is_control) {
+        normalize_controls(&text)
+    } else {
+        text
     }
-    let header = view
-        .output_header()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|text| PreparedCell {
-            text,
-            style: theme.style("table.header"),
-        })
-        .collect::<Vec<_>>();
-    let columns = (0..view.column_count())
-        .zip(view.output_column_width_overrides())
-        .map(|(column, width_override)| PreparedColumn {
-            alignment: view.column_alignment(column),
-            width_override,
-        })
-        .collect();
-    Ok(PreparedOutput {
-        header_visible: view.header_visible(),
-        header,
-        rows: Box::new(ViewPreparedRows {
-            view,
-            theme,
-            conditional_styles: requirements.conditional_styles,
-        }),
-        columns,
-        gap: view.column_gap(),
-    })
-}
-
-struct ViewPreparedRows<'a> {
-    view: &'a TableView,
-    theme: &'a ResolvedTheme,
-    conditional_styles: bool,
-}
-
-impl PreparedRows for ViewPreparedRows<'_> {
-    fn len(&self) -> usize {
-        self.view.row_count()
-    }
-
-    fn row(&self, row_index: usize) -> Vec<PreparedCell> {
-        self.view
-            .rendered_visible_row(row_index)
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(column_index, text)| {
-                let mut style = self.theme.style("table.cell");
-                if self.conditional_styles {
-                    if let Some(conditional) = self
-                        .view
-                        .output_conditional_color(row_index, column_index)
-                        .and_then(|color_ref| self.theme.conditional_style(&color_ref))
-                    {
-                        style = overlay_style(style, conditional);
-                    }
-                }
-                PreparedCell { text, style }
-            })
-            .collect()
-    }
-}
-
-fn normalize_row(row: Vec<PreparedCell>) -> Vec<PreparedCell> {
-    row.into_iter()
-        .map(|cell| PreparedCell {
-            text: normalize_controls(&cell.text),
-            style: cell.style,
-        })
-        .collect()
-}
-
-fn resolved_widths(header: &[PreparedCell], prepared: &PreparedOutput<'_>) -> Vec<usize> {
-    let mut widths = vec![1; prepared.columns.len()];
-    for (index, cell) in header.iter().enumerate().take(widths.len()) {
-        widths[index] = widths[index].max(display_width(&cell.text));
-    }
-    for row_index in 0..prepared.rows.len() {
-        let row = prepared.rows.row(row_index);
-        for (index, cell) in row.iter().enumerate().take(widths.len()) {
-            widths[index] = widths[index].max(display_width(&normalize_controls(&cell.text)));
-        }
-    }
-    for (width, column) in widths.iter_mut().zip(&prepared.columns) {
-        if let Some(override_width) = column.width_override {
-            *width = override_width.max(1);
-        }
-    }
-    widths
 }
 
 fn write_line(
     writer: &mut dyn Write,
     cells: &[PreparedCell],
     columns: &[PreparedColumn],
-    widths: &[usize],
-    gap: &[u8],
+    base_style: Style,
+    gap: usize,
     color: ColorOutput,
     trim_trailing: bool,
 ) -> io::Result<()> {
     let count = if trim_trailing {
         cells
             .iter()
-            .take(columns.len().min(widths.len()))
+            .take(columns.len())
             .rposition(|cell| !cell.text.trim_end_matches(' ').is_empty())
             .map_or(0, |last| last + 1)
     } else {
-        columns.len().min(widths.len())
+        columns.len()
     };
-    for index in 0..count {
+    for (index, column) in columns.iter().enumerate().take(count) {
         if index > 0 {
-            writer.write_all(gap)?;
+            write_spaces(writer, gap)?;
         }
         let (cell, style) = cells
             .get(index)
-            .map(|cell| (cell.text.as_str(), cell.style))
+            .map(|cell| {
+                (
+                    cell.text.as_str(),
+                    cell.foreground.map_or(base_style, |fg| base_style.fg(fg)),
+                )
+            })
             .unwrap_or(("", Style::default()));
         let is_last = index + 1 == count;
-        let text = align_cell(cell, widths[index], columns[index].alignment, is_last);
+        let text = align_cell(cell, column.width, column.alignment, is_last);
         let text = if is_last && trim_trailing {
             text.trim_end_matches(' ')
         } else {
@@ -459,6 +357,16 @@ fn write_line(
     writer.write_all(b"\n")
 }
 
+fn write_spaces(writer: &mut dyn Write, mut count: usize) -> io::Result<()> {
+    const SPACES: [u8; 64] = [b' '; 64];
+    while count > 0 {
+        let chunk = count.min(SPACES.len());
+        writer.write_all(&SPACES[..chunk])?;
+        count -= chunk;
+    }
+    Ok(())
+}
+
 pub fn normalize_controls(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -474,7 +382,7 @@ pub fn normalize_controls(value: &str) -> String {
     normalized
 }
 
-fn display_width(value: &str) -> usize {
+pub(crate) fn display_width(value: &str) -> usize {
     value
         .chars()
         .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(0))
@@ -503,18 +411,6 @@ fn align_cell(value: &str, width: usize, alignment: ColumnAlignment, final_colum
         ColumnAlignment::Left if !final_column => format!("{}{}", clipped, " ".repeat(padding)),
         ColumnAlignment::Left => clipped,
     }
-}
-
-fn overlay_style(mut base: Style, overlay: Style) -> Style {
-    if let Some(fg) = overlay.fg {
-        base = base.fg(fg);
-    }
-    if let Some(bg) = overlay.bg {
-        base = base.bg(bg);
-    }
-    base = base.add_modifier(overlay.add_modifier);
-    base = base.remove_modifier(overlay.sub_modifier);
-    base
 }
 
 fn ansi_start(style: Style) -> String {
@@ -578,313 +474,145 @@ fn ansi_color(color: Color, background: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ingest::SourceAdapter;
-    use crate::ops::filter::{FilterKind, FilterMode};
-    use crate::table::RowCount;
-    use crate::view::Viewport;
 
-    fn rows(values: &[&[&str]]) -> Vec<Vec<String>> {
-        values
-            .iter()
-            .map(|row| row.iter().map(|cell| (*cell).to_owned()).collect())
-            .collect()
-    }
-
-    fn render(view: &mut TableView, color: ColorOutput) -> String {
-        let mut output = Vec::new();
-        write_view(
-            OutputFormat::Table,
-            color,
-            view,
-            &crate::theme::default_theme(),
-            &mut output,
-        )
-        .expect("render");
-        String::from_utf8(output).expect("utf8")
-    }
-
-    #[test]
-    fn resolves_composable_execution_modes() {
-        assert_eq!(
-            resolve_execution_mode(false, None, true),
-            ExecutionMode::Interactive { emit_on_exit: None }
-        );
-        assert_eq!(
-            resolve_execution_mode(false, None, false),
-            ExecutionMode::Batch(OutputFormat::Table)
-        );
-        assert_eq!(
-            resolve_execution_mode(true, None, false),
-            ExecutionMode::Interactive { emit_on_exit: None }
-        );
-        assert_eq!(
-            resolve_execution_mode(true, Some(OutputFormat::Table), false),
-            ExecutionMode::Interactive {
-                emit_on_exit: Some(OutputFormat::Table)
-            }
-        );
-        assert_eq!(
-            resolve_execution_mode(false, Some(OutputFormat::Table), true),
-            ExecutionMode::Batch(OutputFormat::Table)
-        );
-    }
-
-    #[test]
-    fn normalizes_controls_and_clips_unicode_by_display_width() {
-        assert_eq!(
-            normalize_controls("a\n\tb\u{1b}\u{7}"),
-            "a\\n\\tb\\e\\u{0007}"
-        );
-        assert_eq!(clip_display_width("a界b", 3), "a界");
-        assert_eq!(clip_display_width("e\u{301}x", 1), "e\u{301}");
-    }
-
-    #[test]
-    fn renders_aligned_plain_rows_without_chrome_or_final_padding() {
-        let mut view = TableView::classify(
-            rows(&[&["Name", "Count"], &["alpha", "2"], &["b", "10"]]),
-            Viewport::new(10, 4),
-        );
-        assert_eq!(
-            render(&mut view, ColorOutput::Never),
-            "Name   Count\nalpha      2\nb         10\n"
-        );
-    }
-
-    #[test]
-    fn output_completes_incremental_sources_independent_of_viewport() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("incremental.csv");
-        let mut contents = String::from("id,value\n");
-        for index in 0..1_000 {
-            contents.push_str(&format!("{index},row-{index}\n"));
+    fn frozen() -> PreparedOutput {
+        PreparedOutput {
+            header_visible: true,
+            header: vec![PreparedCell {
+                text: "Value".to_owned(),
+                foreground: None,
+            }],
+            rows: vec![vec![PreparedCell {
+                text: "a\nb".to_owned(),
+                foreground: None,
+            }]],
+            columns: vec![PreparedColumn {
+                alignment: ColumnAlignment::Left,
+                width: 6,
+            }],
+            gap: 2,
+            header_style: Style::default(),
+            cell_style: Style::default(),
         }
-        std::fs::write(&path, contents).expect("fixture");
-        let opened = crate::ingest::DelimitedAdapter
-            .open(
-                crate::ingest::source::InputSource::Path(path),
-                &crate::ingest::OpenOptions {
-                    lazy_threshold_bytes: 0,
-                    ..crate::ingest::OpenOptions::default()
-                },
-            )
-            .expect("open")
-            .into_implicit_table()
-            .expect("table");
-        let mut view = TableView::from_opened_table(opened, Viewport::new(2, 1)).expect("view");
-        assert!(matches!(view.row_count_state(), RowCount::AtLeast(_)));
-
-        let rendered = render(&mut view, ColorOutput::Never);
-        assert!(rendered.starts_with(" id  value\n"));
-        assert!(rendered.ends_with("999  row-999\n"));
-        assert_eq!(rendered.lines().count(), 1_001);
-        assert_eq!(view.row_count_state(), RowCount::Exact(1_000));
     }
 
     #[test]
-    fn final_output_uses_live_view_state_but_ignores_cursor_and_viewport() {
-        let mut view = TableView::classify(
-            rows(&[&["A", "B"], &["one", "2"], &["three", "1"]]),
-            Viewport::new(1, 1),
-        );
-        view.goto(1, 1);
-        view.hide_current_column();
-        view.goto(0, 0);
-        view.sort_current_column(
-            crate::ops::sort::SortMode::Lexical,
-            crate::ops::sort::SortDirection::Descending,
-        );
-        assert_eq!(render(&mut view, ColorOutput::Never), "A\nthree\none\n");
-    }
-
-    #[test]
-    fn hidden_header_and_empty_result_emit_zero_bytes() {
-        let mut view = TableView::classify(Vec::new(), Viewport::new(10, 4));
-        assert_eq!(render(&mut view, ColorOutput::Never), "");
-    }
-
-    #[test]
-    fn empty_filtered_result_emits_header_only_or_zero_bytes() {
-        let mut view = TableView::classify(rows(&[&["Name"], &["alpha"]]), Viewport::new(10, 4));
-        view.apply_filter(0, FilterMode::In, FilterKind::Text, "missing".to_owned())
-            .expect("filter");
-        assert_eq!(render(&mut view, ColorOutput::Never), "Name\n");
-        view.toggle_header();
-        assert_eq!(render(&mut view, ColorOutput::Never), "");
-    }
-
-    #[test]
-    fn controls_are_visible_and_unicode_alignment_is_display_width_aware() {
-        let mut view = TableView::classify(
-            rows(&[
-                &["Text", "Number"],
-                &["a\nb\t\u{1b}", "界"],
-                &["e\u{301}", "2"],
-            ]),
-            Viewport::new(10, 4),
-        );
-        assert_eq!(
-            render(&mut view, ColorOutput::Never),
-            "Text      Number\na\\nb\\t\\e  界\ne\u{301}         2\n"
-        );
-    }
-
-    #[test]
-    fn explicit_width_clips_and_color_resets_before_gaps_and_newlines() {
-        let mut view = TableView::classify(
-            rows(&[&["Header", "B"], &["abcdef", "x"]]),
-            Viewport::new(10, 4),
-        );
-        view.set_all_column_widths(3);
-        assert_eq!(render(&mut view, ColorOutput::Never), "Hea  B\nabc  x\n");
-        let colored = render(&mut view, ColorOutput::Always);
-        assert!(colored.contains("\x1b["));
-        assert!(colored.contains("\x1b[0m  "));
-        assert!(colored.ends_with("\x1b[0m\n"));
-    }
-
-    #[test]
-    fn explicit_width_pads_narrow_cells_to_match_the_live_view() {
-        let mut view = TableView::classify(rows(&[&["A", "B"], &["x", "y"]]), Viewport::new(10, 4));
-        view.set_all_column_widths(5);
-        assert_eq!(
-            render(&mut view, ColorOutput::Never),
-            "A      B\nx      y\n"
-        );
-    }
-
-    #[cfg(feature = "saved-views")]
-    #[test]
-    fn conditional_colors_overlay_cells_without_leaking_ansi() {
-        let mut view = TableView::classify(
-            rows(&[&["Active", "Name"], &["true", "alpha"]]),
-            Viewport::new(10, 4),
-        );
-        let saved = crate::saved_views::parse_saved_view_yaml(
-            r#"
-name: colors
-filenames: ["*"]
-source: {}
-view:
-  columns:
-    Active:
-      colors:
-        - match:
-            true: red
-"#,
+    fn complete_formats_serialize_frozen_strings_without_source_access() {
+        let prepared = frozen();
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        write_prepared(
+            OutputFormat::Json,
+            ColorOutput::Never,
+            &prepared,
+            None,
+            &mut first,
         )
-        .expect("saved view");
-        let resolved =
-            crate::saved_views::resolve_columns(&saved.view, view.header().expect("header"));
-        view.apply_saved_columns(&resolved, None);
-
-        let theme = crate::theme::default_theme();
-        let expected_style = overlay_style(
-            theme.style("table.cell"),
-            theme.conditional_style("red").expect("red"),
+        .unwrap();
+        write_prepared(
+            OutputFormat::Json,
+            ColorOutput::Never,
+            &prepared,
+            None,
+            &mut second,
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&first).unwrap(),
+            serde_json::json!({"columns": ["Value"], "rows": [["a\nb"]]}),
         );
-        let expected_start = ansi_start(expected_style);
-        let rendered = render(&mut view, ColorOutput::Always);
-        assert!(
-            rendered.contains(&format!("{expected_start}true  \x1b[0m  ")),
-            "{rendered:?}"
-        );
-        assert!(rendered.ends_with("\x1b[0m\n"));
     }
 
-    struct FailingWriter {
-        kind: io::ErrorKind,
+    #[test]
+    fn colored_cells_preserve_base_attributes_and_reset_before_gaps_and_newlines() {
+        let prepared = PreparedOutput {
+            header_visible: false,
+            header: Vec::new(),
+            rows: vec![vec![
+                PreparedCell {
+                    text: "宽abc".to_owned(),
+                    foreground: Some(Color::Rgb(255, 0, 0)),
+                },
+                PreparedCell {
+                    text: "z".to_owned(),
+                    foreground: None,
+                },
+            ]],
+            columns: vec![
+                PreparedColumn {
+                    alignment: ColumnAlignment::Left,
+                    width: 4,
+                },
+                PreparedColumn {
+                    alignment: ColumnAlignment::Right,
+                    width: 3,
+                },
+            ],
+            gap: 2,
+            header_style: Style::default(),
+            cell_style: Style::default()
+                .fg(Color::Green)
+                .bg(Color::Indexed(25))
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
+        };
+        let mut colored = Vec::new();
+        write_prepared(
+            OutputFormat::Table,
+            ColorOutput::Always,
+            &prepared,
+            None,
+            &mut colored,
+        )
+        .unwrap();
+        assert_eq!(
+            colored,
+            "\x1b[38;2;255;0;0;48;5;25;1;3;4m宽ab\x1b[0m  \x1b[32;48;5;25;1;3;4m  z\x1b[0m\n"
+                .as_bytes()
+        );
+        let mut plain = Vec::new();
+        write_prepared(
+            OutputFormat::Table,
+            ColorOutput::Never,
+            &prepared,
+            None,
+            &mut plain,
+        )
+        .unwrap();
+        assert_eq!(plain, "宽ab    z\n".as_bytes());
     }
 
+    struct FailingWriter(io::ErrorKind);
     impl Write for FailingWriter {
         fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-            Err(io::Error::from(self.kind))
+            Err(io::Error::from(self.0))
         }
-
         fn flush(&mut self) -> io::Result<()> {
-            Ok(())
+            Err(io::Error::from(self.0))
         }
     }
 
     #[test]
-    fn broken_pipe_is_clean_but_other_writer_errors_fail() {
+    fn broken_pipe_is_clean_but_other_errors_propagate() {
         for format in [OutputFormat::Table, OutputFormat::Json, OutputFormat::Jsonl] {
-            let mut view = TableView::classify(rows(&[&["A"], &["1"]]), Viewport::new(10, 4));
-            write_view(
+            write_prepared(
                 format,
                 ColorOutput::Never,
-                &mut view,
-                &crate::theme::default_theme(),
-                &mut FailingWriter {
-                    kind: io::ErrorKind::BrokenPipe,
-                },
+                &frozen(),
+                None,
+                &mut FailingWriter(io::ErrorKind::BrokenPipe),
             )
-            .expect("broken pipe");
-
-            let error = write_view(
+            .unwrap();
+            assert!(write_prepared(
                 format,
                 ColorOutput::Never,
-                &mut view,
-                &crate::theme::default_theme(),
-                &mut FailingWriter {
-                    kind: io::ErrorKind::Other,
-                },
+                &frozen(),
+                None,
+                &mut FailingWriter(io::ErrorKind::Other)
             )
-            .expect_err("other error");
-            assert!(error.downcast_ref::<io::Error>().is_some());
+            .is_err());
         }
-    }
-
-    #[test]
-    fn ansi_conversion_covers_colors_and_modifiers() {
-        let style = Style::default()
-            .fg(Color::Rgb(1, 2, 3))
-            .bg(Color::Indexed(42))
-            .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED);
-        assert_eq!(ansi_start(style), "\x1b[38;2;1;2;3;48;5;42;1;3;4m");
-        assert_eq!(ansi_start(Style::default()), "");
-    }
-
-    struct FlushWriter {
-        kind: Option<io::ErrorKind>,
-        flushed: bool,
-    }
-
-    impl Write for FlushWriter {
-        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-            Ok(buffer.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.flushed = true;
-            match self.kind {
-                Some(kind) => Err(io::Error::from(kind)),
-                None => Ok(()),
-            }
-        }
-    }
-
-    #[test]
-    fn output_flushes_and_applies_broken_pipe_policy() {
-        let mut successful = FlushWriter {
-            kind: None,
-            flushed: false,
-        };
-        flush_output(&mut successful).expect("flush");
-        assert!(successful.flushed);
-
-        let mut broken = FlushWriter {
-            kind: Some(io::ErrorKind::BrokenPipe),
-            flushed: false,
-        };
-        flush_output(&mut broken).expect("broken pipe flush");
-        assert!(broken.flushed);
-
-        let error = flush_output(&mut FlushWriter {
-            kind: Some(io::ErrorKind::Other),
-            flushed: false,
-        })
-        .expect_err("other flush error");
-        assert!(error.downcast_ref::<io::Error>().is_some());
+        flush_output(&mut FailingWriter(io::ErrorKind::BrokenPipe)).unwrap();
+        assert!(flush_output(&mut FailingWriter(io::ErrorKind::Other)).is_err());
     }
 }

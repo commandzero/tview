@@ -2,7 +2,7 @@
 type: Guide
 title: Keybindings
 description: Navigation, search, sorting, filters, and column controls.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # Keybindings
@@ -42,7 +42,7 @@ position.
 | `s`, `S` | Sort the current column lexically, ascending or descending. |
 | `a`, `A` | Sort the current column naturally, ascending or descending. |
 | `#`, `@` | Sort the current column numerically, ascending or descending. |
-| `r` | Reload file or input data and reset sort order. |
+| `r` | Reload the committed source configuration, superseding pending source work. Keep compatible view settings; a reload error ends the session. Reloading stdin does nothing. |
 | `y` | Yank the rendered current cell to the clipboard when clipboard support is enabled. |
 | `Y` | Yank the raw current cell to the clipboard when clipboard support is enabled. |
 | `v` | Show the saved view modal when saved views are enabled. |
@@ -56,3 +56,8 @@ position.
 | `[num]]` | Skip to the next row value change. |
 | `[num]{` | Skip to the previous column value change. |
 | `[num]}` | Skip to the next column value change. |
+
+Source Configuration (`u`) edits a request, not the active result. A replacement
+becomes active only after its result and view are ready. If it fails, the old
+rows remain visible. Saving a view or reloading uses the last successful source
+configuration rather than the failed request.

@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+pub mod binding;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,8 +15,8 @@ use crate::ingest::{
 #[cfg(test)]
 use crate::table::ColumnSourceIdentity;
 use crate::table::{
-    NullPlacement, SchemaState, SortDirection as TableSortDirection,
-    SourceFilterOperator as TableSourceFilterOperator, SourceOperand, TableDefinition,
+    NullPlacement, SortDirection as TableSortDirection,
+    SourceFilterOperator as TableSourceFilterOperator, SourceOperand,
 };
 use crate::theme::{
     ConditionalColorRule, ConditionalValue, GradientStop, IdentifierColors, MatchEntry, RangeEntry,
@@ -113,12 +115,27 @@ pub struct SelectedSavedView<'a> {
     pub view: &'a SavedViewFile,
     pub warnings: Vec<SavedViewWarning>,
 }
+/// The validated value selected for an invocation, independent of later filesystem edits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedSavedViewSnapshot {
+    pub path: PathBuf,
+    pub canonical_name: String,
+    pub view: SavedView,
+}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedColumns {
-    pub columns: Vec<Option<ResolvedColumnView>>,
-    pub pending: BTreeMap<String, ColumnView>,
-    pub warnings: Vec<SavedViewWarning>,
+#[expect(
+    clippy::large_enum_variant,
+    reason = "One invocation-owned snapshot needs no extra heap allocation for its disabled variant"
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum SavedViewInvocation {
+    Disabled,
+    Enabled {
+        selected: Option<SelectedSavedViewSnapshot>,
+        target_path: Option<PathBuf>,
+        view_name: String,
+        warnings: Vec<SavedViewWarning>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -551,6 +568,64 @@ pub fn select_saved_view<'a>(
         }
     }
 }
+/// Discover and select once, retaining only the selected validated document.
+pub fn prepare_saved_view(
+    selection: Option<SavedViewSelection<'_>>,
+    input_path: &Path,
+    config_root: Option<&Path>,
+) -> Result<SavedViewInvocation, String> {
+    let Some(selection) = selection else {
+        return Ok(SavedViewInvocation::Disabled);
+    };
+    let target_path = saved_view_dir(config_root).and_then(|directory| {
+        let basename = input_path.file_name()?.to_str()?;
+        let stem = basename.rsplit_once('.').map_or(basename, |(stem, _)| stem);
+        Some(directory.join(format!("{stem}.yml")))
+    });
+    let view_name = target_path
+        .as_deref()
+        .and_then(Path::file_stem)
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("view")
+        .to_owned();
+    let mut discovery = discover_saved_views(config_root);
+    let forced_name = match &selection {
+        SavedViewSelection::Force { name } => Some(*name),
+        SavedViewSelection::Auto { .. } => None,
+    };
+    let selected = select_saved_view(&discovery.views, selection).map(|selected| {
+        let index = discovery
+            .views
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, selected.view))
+            .expect("selected candidate belongs to discovery");
+        (index, selected.warnings)
+    });
+    if selected.is_none() {
+        if let Some(name) = forced_name {
+            return Err(format!(
+                "saved view '{name}' was requested but was not found"
+            ));
+        }
+    }
+    let selected = selected.map(|(index, selection_warnings)| {
+        let selected = discovery.views.swap_remove(index);
+        discovery.warnings.extend(selected.warnings);
+        discovery.warnings.extend(selection_warnings);
+        SelectedSavedViewSnapshot {
+            path: selected.path,
+            canonical_name: selected.canonical_name,
+            view: selected.view,
+        }
+    });
+    let warnings = discovery.warnings;
+    Ok(SavedViewInvocation::Enabled {
+        selected,
+        target_path,
+        view_name,
+        warnings,
+    })
+}
 
 pub fn normalize_view_name(name: &str) -> String {
     let path = Path::new(name);
@@ -562,179 +637,6 @@ pub fn normalize_view_name(name: &str) -> String {
             .to_owned(),
         _ => name.to_owned(),
     }
-}
-
-pub fn resolve_columns(view: &SavedView, headers: &[String]) -> ResolvedColumns {
-    let mut resolved = vec![None; headers.len()];
-    let mut matched_keys = BTreeSet::new();
-
-    for (column_index, header) in headers.iter().enumerate() {
-        if let Some((key, column_view)) = view
-            .view
-            .columns
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(header))
-        {
-            matched_keys.insert(key.clone());
-            resolved[column_index] = Some(ResolvedColumnView {
-                column_index,
-                source_key: key.clone(),
-                view: column_view.clone(),
-            });
-            continue;
-        }
-
-        let mut wildcard_matches = view
-            .view
-            .columns
-            .iter()
-            .filter(|(key, _)| is_wildcard_pattern(key))
-            .filter(|(key, _)| column_glob_matches(key, header))
-            .map(|(key, column_view)| (wildcard_specificity(key), key.clone(), column_view.clone()))
-            .collect::<Vec<_>>();
-        wildcard_matches
-            .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-        if let Some((_, key, column_view)) = wildcard_matches.into_iter().next() {
-            matched_keys.insert(key.clone());
-            resolved[column_index] = Some(ResolvedColumnView {
-                column_index,
-                source_key: key,
-                view: column_view,
-            });
-        }
-    }
-
-    let warnings = view
-        .view
-        .columns
-        .keys()
-        .filter(|key| !matched_keys.contains(*key))
-        .map(|key| {
-            warning(
-                format!("view.columns.{key}"),
-                "configured column matched no header",
-            )
-        })
-        .collect();
-
-    ResolvedColumns {
-        columns: resolved,
-        pending: BTreeMap::new(),
-        warnings,
-    }
-}
-
-pub fn resolve_structured_columns(
-    view: &SavedView,
-    definition: &TableDefinition,
-) -> ResolvedColumns {
-    let mut resolved = vec![None; definition.columns.len()];
-    let mut matched_keys = BTreeSet::new();
-    let mut warnings = Vec::new();
-    let mut warned_ambiguous_labels = BTreeSet::new();
-    let mut label_counts: HashMap<&str, usize> = HashMap::with_capacity(definition.columns.len());
-    for column in &definition.columns {
-        *label_counts
-            .entry(column.display_name.as_str())
-            .or_insert(0) += 1;
-    }
-
-    for (index, column) in definition.columns.iter().enumerate() {
-        let canonical = definition.canonical_column_key(index);
-        if let Some((key, column_view)) = canonical
-            .as_deref()
-            .and_then(|canonical| view.view.columns.get_key_value(canonical))
-        {
-            matched_keys.insert(key.clone());
-            resolved[index] = Some(ResolvedColumnView {
-                column_index: index,
-                source_key: key.clone(),
-                view: column_view.clone(),
-            });
-            continue;
-        }
-
-        let label_matches = label_counts
-            .get(column.display_name.as_str())
-            .copied()
-            .unwrap_or_default();
-        if label_matches == 1 {
-            if let Some((key, column_view)) = view.view.columns.get_key_value(&column.display_name)
-            {
-                matched_keys.insert(key.clone());
-                resolved[index] = Some(ResolvedColumnView {
-                    column_index: index,
-                    source_key: key.clone(),
-                    view: column_view.clone(),
-                });
-            }
-        } else if view.view.columns.contains_key(&column.display_name)
-            && warned_ambiguous_labels.insert(column.display_name.clone())
-        {
-            warnings.push(warning(
-                format!("view.columns.{}", column.display_name),
-                "display label is ambiguous; use a canonical source key such as name#2",
-            ));
-        }
-    }
-
-    let mut pending = BTreeMap::new();
-    for (key, column_view) in &view.view.columns {
-        if matched_keys.contains(key) {
-            continue;
-        }
-        if definition.schema_state == SchemaState::Provisional && key.starts_with('/') {
-            pending.insert(key.clone(), column_view.clone());
-        } else {
-            warnings.push(warning(
-                format!("view.columns.{key}"),
-                "configured column matched no structured source column",
-            ));
-        }
-    }
-
-    ResolvedColumns {
-        columns: resolved,
-        pending,
-        warnings,
-    }
-}
-
-pub fn resolve_column_reference(headers: &[String], key: &str) -> Option<usize> {
-    headers
-        .iter()
-        .position(|header| key.eq_ignore_ascii_case(header))
-        .or_else(|| {
-            let mut wildcard_matches = headers
-                .iter()
-                .enumerate()
-                .filter(|(_, header)| is_wildcard_pattern(key) && column_glob_matches(key, header))
-                .map(|(column, _)| column)
-                .collect::<Vec<_>>();
-            wildcard_matches.sort_unstable();
-            wildcard_matches.into_iter().next()
-        })
-}
-
-pub fn resolve_structured_column_reference(
-    definition: &TableDefinition,
-    key: &str,
-) -> Option<usize> {
-    definition
-        .columns
-        .iter()
-        .enumerate()
-        .position(|(index, _)| definition.canonical_column_key(index).as_deref() == Some(key))
-        .or_else(|| {
-            let matches = definition
-                .columns
-                .iter()
-                .enumerate()
-                .filter(|(_, column)| column.display_name == key)
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            (matches.len() == 1).then(|| matches[0])
-        })
 }
 
 fn validate_raw_view(raw: RawSavedView) -> ValidatedSavedView {
@@ -2296,46 +2198,6 @@ view: {}
     }
 
     #[test]
-    fn structured_saved_columns_resolve_the_object_key_identity() {
-        let parsed = parse_saved_view_yaml(
-            r#"
-name: keyed
-filenames: [repositories.json]
-source: {}
-view:
-  columns:
-    "@key":
-      label: Repository
-"#,
-        )
-        .expect("parse");
-        let generation = crate::table::SourceGeneration::new();
-        let definition = TableDefinition {
-            generation,
-            columns: vec![crate::table::ColumnDefinition {
-                id: crate::table::ColumnId {
-                    generation,
-                    ordinal: 0,
-                },
-                source_identity: ColumnSourceIdentity::ObjectKey,
-                display_name: "name".to_owned(),
-                source_declared_type: None,
-                source_type: crate::table::LogicalType::Text,
-                type_origin: crate::table::TypeOrigin::Declared,
-            }],
-            schema_state: SchemaState::Complete,
-            relation: crate::table::RelationMetadata::implicit("data", true),
-        };
-        let resolved = resolve_structured_columns(&parsed.view, &definition);
-        assert_eq!(
-            resolved.columns[0]
-                .as_ref()
-                .and_then(|column| column.view.label.as_deref()),
-            Some("Repository")
-        );
-    }
-
-    #[test]
     fn invalid_source_and_null_values_warn_non_fatally() {
         let parsed = parse_saved_view_yaml(
             r#"
@@ -2608,235 +2470,102 @@ view:
     }
 
     #[test]
-    fn resolves_columns_exact_case_insensitive_before_wildcard() {
-        let parsed = parse_saved_view_yaml(
-            r#"
-name: columns
-filenames: [data.csv]
-source: {}
-view:
-  columns:
-    count:
-      width: 20
-    "*count":
-      visible: false
-"#,
+    fn invocation_selection_retains_one_validated_file_across_external_edits() {
+        let root = tempfile::tempdir().expect("config root");
+        let bundle = root.path().join("tview/views/nested");
+        std::fs::create_dir_all(&bundle).expect("view bundle");
+        let path = bundle.join("chosen.yml");
+        std::fs::write(
+            &path,
+            "name: chosen\nfilenames: [data.csv]\nsource:\n  limit: 2\nview:\n  columns:\n    name:\n      label: Original\n",
         )
-        .expect("parse");
-        let headers = vec!["Count".to_owned(), "docs_count".to_owned()];
-
-        let resolved = resolve_columns(&parsed.view, &headers);
-
-        assert!(resolved.warnings.is_empty());
+        .expect("initial YAML");
+        let input = Path::new("data.csv");
+        let first = prepare_saved_view(
+            Some(SavedViewSelection::Force {
+                name: "chosen.yaml",
+            }),
+            input,
+            Some(root.path()),
+        )
+        .expect("forced selection");
+        std::fs::remove_file(&path).expect("remove after selection");
+        let SavedViewInvocation::Enabled {
+            selected: Some(snapshot),
+            target_path,
+            warnings,
+            ..
+        } = first
+        else {
+            panic!("selected saved view");
+        };
+        assert_eq!(snapshot.path, path);
+        assert_eq!(snapshot.canonical_name, "chosen");
+        assert_eq!(target_path, Some(root.path().join("tview/views/data.yml")));
+        assert!(warnings.is_empty());
+        assert_eq!(snapshot.view.source.limit, Some(2));
         assert_eq!(
-            resolved.columns[0].as_ref().expect("count").source_key,
-            "count"
+            snapshot.view.view.columns["name"].label.as_deref(),
+            Some("Original")
         );
+        assert!(prepare_saved_view(
+            Some(SavedViewSelection::Force { name: "chosen" }),
+            input,
+            Some(root.path()),
+        )
+        .is_err());
+        std::fs::write(
+            &path,
+            "name: chosen\nfilenames: [data.csv]\nsource:\n  limit: 4\nview:\n  columns:\n    name:\n      label: Updated\n",
+        ).expect("updated YAML");
+        let SavedViewInvocation::Enabled {
+            selected: Some(fresh),
+            ..
+        } = prepare_saved_view(
+            Some(SavedViewSelection::Auto { input_path: input }),
+            input,
+            Some(root.path()),
+        )
+        .expect("fresh invocation")
+        else {
+            panic!("fresh selection")
+        };
+        assert_eq!(fresh.view.source.limit, Some(4));
         assert_eq!(
-            resolved.columns[0].as_ref().expect("count").view.width,
-            Some(ColumnWidth::Fixed(20))
-        );
-        assert_eq!(
-            resolved.columns[1].as_ref().expect("docs_count").source_key,
-            "*count"
-        );
-        assert_eq!(
-            resolved.columns[1]
-                .as_ref()
-                .expect("docs_count")
-                .view
-                .visible,
-            Some(false)
+            fresh.view.view.columns["name"].label.as_deref(),
+            Some("Updated")
         );
     }
 
     #[test]
-    fn resolves_wildcard_by_specificity_then_key_order_and_warns_unmatched() {
-        let parsed = parse_saved_view_yaml(
-            r#"
-name: columns
-filenames: [data.csv]
-source: {}
-view:
-  columns:
-    "*count":
-      visible: false
-    "docs_count*":
-      width: 10
-    missing:
-      width: 5
-"#,
-        )
-        .expect("parse");
-        let headers = vec!["DOCS_COUNT".to_owned()];
-
-        let resolved = resolve_columns(&parsed.view, &headers);
-
+    fn disabled_invocation_neither_discovers_malformed_files_nor_prepares_authoring() {
+        let root = tempfile::tempdir().expect("config root");
+        let views = root.path().join("tview/views");
+        std::fs::create_dir_all(&views).expect("views");
+        std::fs::write(views.join("bad.yml"), "name: [").expect("bad YAML");
         assert_eq!(
-            resolved.columns[0].as_ref().expect("docs_count").source_key,
-            "docs_count*"
+            prepare_saved_view(None, Path::new("bad.csv"), Some(root.path())),
+            Ok(SavedViewInvocation::Disabled)
         );
-        assert_eq!(
-            resolved.columns[0].as_ref().expect("docs_count").view.width,
-            Some(ColumnWidth::Fixed(10))
-        );
-        assert!(resolved
-            .warnings
-            .iter()
-            .any(|warning| warning.field == "view.columns.missing"));
-    }
-
-    #[test]
-    fn structured_columns_prefer_canonical_identity_and_retain_pending_paths() {
-        let parsed = parse_saved_view_yaml(
-            r#"
-name: json
-filenames: [data.json]
-source: {}
-view:
-  columns:
-    /customer/email:
-      label: Customer
-    email:
-      visible: false
-    /late/value:
-      width: 12
-"#,
+        let SavedViewInvocation::Enabled {
+            selected,
+            target_path,
+            warnings,
+            ..
+        } = prepare_saved_view(
+            Some(SavedViewSelection::Auto {
+                input_path: Path::new("bad.csv"),
+            }),
+            Path::new("bad.csv"),
+            Some(root.path()),
         )
-        .expect("parse");
-        let generation = crate::table::SourceGeneration::new();
-        let definition = TableDefinition {
-            generation,
-            columns: vec![
-                crate::table::ColumnDefinition {
-                    id: crate::table::ColumnId {
-                        generation,
-                        ordinal: 0,
-                    },
-                    source_identity: ColumnSourceIdentity::StructuredPath(
-                        "/customer/email".parse().unwrap(),
-                    ),
-                    display_name: "email".to_owned(),
-                    source_declared_type: None,
-                    source_type: crate::table::LogicalType::Text,
-                    type_origin: crate::table::TypeOrigin::Inferred,
-                },
-                crate::table::ColumnDefinition {
-                    id: crate::table::ColumnId {
-                        generation,
-                        ordinal: 1,
-                    },
-                    source_identity: ColumnSourceIdentity::StructuredPath(
-                        "/billing/email".parse().unwrap(),
-                    ),
-                    display_name: "email".to_owned(),
-                    source_declared_type: None,
-                    source_type: crate::table::LogicalType::Text,
-                    type_origin: crate::table::TypeOrigin::Inferred,
-                },
-            ],
-            schema_state: SchemaState::Provisional,
-            relation: crate::table::RelationMetadata::implicit("data", true),
+        .expect("automatic selection")
+        else {
+            panic!("enabled invocation")
         };
-        let resolved = resolve_structured_columns(&parsed.view, &definition);
-        assert_eq!(
-            resolved.columns[0].as_ref().expect("canonical").source_key,
-            "/customer/email"
-        );
-        assert!(resolved.columns[1].is_none());
-        assert!(resolved.pending.contains_key("/late/value"));
-        assert!(resolved
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("ambiguous")));
-        assert_eq!(
-            resolved
-                .warnings
-                .iter()
-                .filter(|warning| warning.message.contains("ambiguous"))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn duplicate_relational_columns_use_occurrence_keys_and_reject_ambiguity() {
-        let generation = crate::table::SourceGeneration::new();
-        let relation = "joined".to_owned();
-        let column = |ordinal| crate::table::ColumnDefinition {
-            id: crate::table::ColumnId {
-                generation,
-                ordinal,
-            },
-            source_identity: ColumnSourceIdentity::RelationColumn {
-                relation: relation.clone(),
-                ordinal: ordinal as usize,
-                name: "name".to_owned(),
-            },
-            display_name: "name".to_owned(),
-            source_declared_type: Some("TEXT".to_owned()),
-            source_type: crate::table::LogicalType::Text,
-            type_origin: crate::table::TypeOrigin::Declared,
-        };
-        let definition = TableDefinition {
-            generation,
-            columns: vec![column(0), column(1)],
-            schema_state: SchemaState::Complete,
-            relation: crate::table::RelationMetadata {
-                name: relation.clone(),
-                display_name: relation,
-                header_visible: true,
-            },
-        };
-        assert_eq!(
-            definition.canonical_column_key(0).as_deref(),
-            Some("name#1")
-        );
-        assert_eq!(
-            definition.canonical_column_key(1).as_deref(),
-            Some("name#2")
-        );
-
-        let deterministic = parse_saved_view_yaml(
-            r#"
-name: duplicate
-filenames: [joined.db]
-source: {}
-view:
-  columns:
-    "name#2":
-      label: Secondary
-"#,
-        )
-        .expect("deterministic saved view");
-        let resolved = resolve_structured_columns(&deterministic.view, &definition);
-        assert!(resolved.columns[0].is_none());
-        assert_eq!(
-            resolved.columns[1]
-                .as_ref()
-                .expect("second occurrence")
-                .source_key,
-            "name#2"
-        );
-
-        let ambiguous = parse_saved_view_yaml(
-            r#"
-name: ambiguous
-filenames: [joined.db]
-source: {}
-view:
-  columns:
-    name:
-      visible: false
-"#,
-        )
-        .expect("ambiguous saved view");
-        let resolved = resolve_structured_columns(&ambiguous.view, &definition);
-        assert!(resolved.columns.iter().all(Option::is_none));
-        assert!(resolved
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("ambiguous")));
+        assert!(selected.is_none());
+        assert_eq!(target_path, Some(views.join("bad.yml")));
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]
@@ -2867,7 +2596,6 @@ view:
             .expect("open fixture")
             .into_implicit_table()
             .expect("table");
-        let resolved = resolve_structured_columns(&parsed.view, &table.definition);
 
         let user_id = table
             .definition
@@ -2881,12 +2609,6 @@ view:
                 )
             })
             .expect("user id column");
-        assert_eq!(
-            resolved.columns[user_id]
-                .as_ref()
-                .and_then(|column| column.view.label.as_deref()),
-            Some("User ID")
-        );
         assert!(!table.definition.columns.iter().any(|column| {
             matches!(
                 &column.source_identity,
@@ -2894,6 +2616,16 @@ view:
                     if pointer.as_str().contains("took") || pointer.as_str().contains("total")
             )
         }));
+        let mut view =
+            crate::view::TableView::from_opened_table(table, crate::view::Viewport::new(10, 20))
+                .expect("view");
+        view.install_saved_binding(parsed.view.view, true);
+        assert_eq!(
+            view.header()
+                .and_then(|header| header.get(user_id))
+                .map(String::as_str),
+            Some("User ID")
+        );
     }
 
     #[test]

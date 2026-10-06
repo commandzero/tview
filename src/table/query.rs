@@ -332,6 +332,21 @@ impl SourceQueryCoordinator {
             .expect("source query worker accepts jobs");
         revision
     }
+    /// Invalidate every queued or running request before a synchronous reload.
+    /// Blocking work keeps running but can no longer publish its result.
+    pub fn supersede(&mut self) -> u64 {
+        let revision = self.next_revision;
+        self.next_revision = self.next_revision.saturating_add(1);
+        self.latest_requested = revision;
+        self.progress = SourceQueryProgress::Idle;
+        self.latest_worker_revision
+            .store(revision, Ordering::Release);
+        revision
+    }
+
+    pub fn latest_revision(&self) -> u64 {
+        self.latest_requested
+    }
 
     pub fn progress(&self) -> &SourceQueryProgress {
         &self.progress
@@ -438,10 +453,8 @@ async fn source_query_worker(
                         }
                         replacement = worker.recv() => {
                             let Some(mut replacement) = replacement else {
-                                let result = running.await;
-                                if revision == latest_requested.load(Ordering::Acquire) {
-                                    let _ = sender.send(SourceQueryJobResult { revision, result });
-                                }
+                                // Closing the lifecycle cancels an async request; blocking
+                                // requests are still awaited by the other task branch.
                                 let _ = worker_done.send(());
                                 return;
                             };
@@ -689,6 +702,57 @@ mod tests {
         assert!(first_finished.load(std::sync::atomic::Ordering::SeqCst));
         assert!(!superseded_ran.load(std::sync::atomic::Ordering::SeqCst));
         assert!(coordinator.poll().is_none());
+    }
+
+    #[test]
+    fn superseded_work_never_overwrites_latest_success_or_failure() {
+        let generation = SourceGeneration::new();
+        for stale_fails in [true, false] {
+            let mut coordinator = SourceQueryCoordinator::default();
+            let (started, wait_for_start) = std::sync::mpsc::channel();
+            let (release, wait_for_release) = std::sync::mpsc::channel();
+            coordinator.request(SourceQueryTask::Blocking(Box::new(move || {
+                started.send(()).expect("blocking worker started");
+                wait_for_release.recv().expect("blocking worker released");
+                if stale_fails {
+                    anyhow::bail!("stale failure");
+                }
+                Ok(result(generation, vec![vec!["stale".to_owned()]]))
+            })));
+            wait_for_start
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("worker started");
+            coordinator.supersede();
+            let latest = coordinator.request(SourceQueryTask::Blocking(Box::new(move || {
+                if stale_fails {
+                    Ok(result(generation, vec![vec!["current".to_owned()]]))
+                } else {
+                    anyhow::bail!("current failure");
+                }
+            })));
+            release.send(()).expect("release stale worker");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let event = loop {
+                if let Some(event) = coordinator.poll() {
+                    break event;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "latest worker timed out"
+                );
+                std::thread::yield_now();
+            };
+            if stale_fails {
+                assert!(
+                    matches!(event, SourceQueryCoordinatorEvent::Ready { revision, .. } if revision == latest)
+                );
+            } else {
+                assert!(
+                    matches!(event, SourceQueryCoordinatorEvent::Failed { revision, .. } if revision == latest)
+                );
+            }
+            assert!(coordinator.poll().is_none());
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@ pub mod command;
 pub mod ingest;
 pub mod ops;
 pub mod output;
+mod projection;
 #[cfg(feature = "saved-views")]
 pub mod saved_views;
 pub mod table;
@@ -33,23 +34,91 @@ pub fn run(args: cli::Args) -> anyhow::Result<()> {
     let source = config.target.clone();
     match execution {
         output::ExecutionMode::Batch(format) => {
-            let Some(mut app) = prepare_app(&config, theme_load, source, |_| Ok(()), None)? else {
+            let requirements = output::requirements(format, config.color)?;
+            #[cfg(feature = "saved-views")]
+            let invocation = prepare_saved_view_invocation(&config, None)?;
+            let Some((mut opened, open_options)) = open_selected_source(
+                &config,
+                source,
+                |_| Ok(()),
+                None,
+                #[cfg(feature = "saved-views")]
+                &invocation,
+                ingest::open_source,
+            )?
+            else {
                 return Ok(());
             };
-            emit_diagnostics(&app.diagnostics);
-            emit_source_result_warnings(&app.view);
-            if let Some(limit) = config.top_lines {
-                let remaining = app.view.prepare_preview(
-                    limit.get(),
-                    config.color == output::ColorOutput::Always,
-                    app.open_options.schema_scan == ingest::SchemaScan::Full,
-                )?;
-                output::write_preview_to_stdout(config.color, &mut app.view, &app.theme, remaining)
-            } else {
-                output::write_view_to_stdout(format, config.color, &mut app.view, &app.theme)
+            let source_warnings = std::mem::take(&mut opened.warnings);
+            let policy = config
+                .top_lines
+                .map_or(projection::ProjectionPolicy::Complete, |limit| {
+                    projection::ProjectionPolicy::Prefix {
+                        limit: limit.get(),
+                        full_schema: open_options.schema_scan == ingest::SchemaScan::Full,
+                    }
+                });
+            #[cfg(feature = "saved-views")]
+            let selected_view = match &invocation {
+                saved_views::SavedViewInvocation::Enabled {
+                    selected: Some(selected),
+                    ..
+                } => Some(selected.view.view.clone()),
+                _ => None,
+            };
+            #[cfg(feature = "saved-views")]
+            let sorts_enabled = config.sorted != Some(false);
+            let settings = projection::ProjectionSettings::new(
+                config.width,
+                #[cfg(feature = "saved-views")]
+                selected_view,
+                #[cfg(feature = "saved-views")]
+                sorts_enabled,
+                &opened.definition,
+            );
+            let partial = opened.store.result_is_partial();
+            let frozen = projection::prepare(
+                projection::SourceInput {
+                    store: opened.store.as_mut(),
+                    definition: opened.definition,
+                    partial,
+                    replay_schema: None,
+                },
+                settings,
+                policy,
+                requirements,
+                &theme_load.theme,
+            )?;
+            #[cfg(feature = "saved-views")]
+            if let saved_views::SavedViewInvocation::Enabled { warnings, .. } = &invocation {
+                emit_diagnostics(
+                    &warnings
+                        .iter()
+                        .map(format_saved_view_warning)
+                        .collect::<Vec<_>>(),
+                );
             }
+            for warning in &theme_load.warnings {
+                eprintln!("theme warning: {}: {}", warning.field, warning.message);
+            }
+            emit_diagnostics(&frozen.diagnostics);
+            if opened.store.result_is_partial() {
+                eprintln!("warning: source returned a partial result");
+            }
+            for warning in source_warnings.iter().chain(opened.store.result_warnings()) {
+                eprintln!("warning: {warning}");
+            }
+            output::write_prepared_to_stdout(
+                format,
+                config.color,
+                &frozen.output,
+                config.top_lines.map(|_| frozen.remaining),
+            )
         }
         output::ExecutionMode::Interactive { emit_on_exit } => {
+            if let Some(format) = emit_on_exit {
+                output::requirements(format, config.color)?;
+            }
             ui::terminal::TerminalSession::ensure_available()?;
             let source_is_stdin = source == ingest::source::InputSource::Stdin;
             let mut terminal = ui::terminal::TerminalSession::enter(source_is_stdin)?;
@@ -98,11 +167,14 @@ pub fn run(args: cli::Args) -> anyhow::Result<()> {
                     if let Some(format) = emit_on_exit {
                         app.view.await_latest_source_query()?;
                         emit_source_result_warnings(&app.view);
-                        output::write_view_to_stdout(
+                        let requirements = output::requirements(format, config.color)?;
+                        let frozen = app.view.prepare_projection(requirements, &app.theme)?;
+                        emit_diagnostics(&frozen.diagnostics);
+                        output::write_prepared_to_stdout(
                             format,
                             config.color,
-                            &mut app.view,
-                            &app.theme,
+                            &frozen.output,
+                            None,
                         )?;
                     }
                     Ok(())
@@ -176,6 +248,14 @@ fn emit_diagnostics(diagnostics: &[String]) {
         eprintln!("{diagnostic}");
     }
 }
+fn warning_footer(messages: &[String]) -> Option<String> {
+    let first = messages.first()?;
+    Some(if messages.len() == 1 {
+        first.clone()
+    } else {
+        format!("{first} (+{} more warnings)", messages.len() - 1)
+    })
+}
 
 fn emit_source_result_warnings(view: &view::TableView) {
     if view.source_result_is_partial() {
@@ -193,9 +273,34 @@ fn prepare_app(
     config: &cli::Config,
     theme_load: theme::ThemeLoad,
     source: ingest::source::InputSource,
+    report_status: impl FnMut(&str) -> anyhow::Result<()>,
+    select_relation: Option<&mut RelationSelector<'_>>,
+) -> anyhow::Result<Option<App>> {
+    #[cfg(feature = "saved-views")]
+    let invocation = prepare_saved_view_invocation(config, None)?;
+    prepare_app_from_selection(
+        config,
+        theme_load,
+        source,
+        report_status,
+        select_relation,
+        #[cfg(feature = "saved-views")]
+        &invocation,
+        ingest::open_source,
+    )
+}
+
+fn open_selected_source(
+    config: &cli::Config,
+    source: ingest::source::InputSource,
     mut report_status: impl FnMut(&str) -> anyhow::Result<()>,
     mut select_relation: Option<&mut RelationSelector<'_>>,
-) -> anyhow::Result<Option<App>> {
+    #[cfg(feature = "saved-views")] invocation: &saved_views::SavedViewInvocation,
+    open_source: impl FnOnce(
+        ingest::source::InputSource,
+        &ingest::OpenOptions,
+    ) -> anyhow::Result<ingest::OpenedSource>,
+) -> anyhow::Result<Option<(ingest::OpenedTable, ingest::OpenOptions)>> {
     report_status(&format!("Loading {}", source.display_name()))?;
     let parse_options = ingest::ParseOptions {
         encoding: config.encoding.clone(),
@@ -204,7 +309,13 @@ fn prepare_app(
         quote_char: config.quote_char,
     };
     #[cfg(feature = "saved-views")]
-    let saved_source_options = selected_saved_view_source_options(config)?;
+    let saved_source_options = match invocation {
+        saved_views::SavedViewInvocation::Enabled {
+            selected: Some(selected),
+            ..
+        } => selected.view.source_options(),
+        _ => ingest::SourceOptionOverrides::default(),
+    };
     #[cfg(not(feature = "saved-views"))]
     let saved_source_options = ingest::SourceOptionOverrides::default();
     let mut open_options = ingest::OpenOptions::merge(
@@ -213,12 +324,12 @@ fn prepare_app(
         &config.source_options,
     );
     open_options.preview = config.top_lines.is_some();
-    open_options.delimited = parse_options.clone();
+    open_options.delimited = parse_options;
     open_options.validate()?;
     if let Some(schema_status) = full_schema_scan_status(&source, &open_options) {
         report_status(&schema_status)?;
     }
-    let mut opened_source = ingest::open_source(source.clone(), &open_options)?;
+    let mut opened_source = open_source(source, &open_options)?;
     #[cfg(feature = "elasticsearch")]
     if !opened_source.has_selected_table()
         && select_relation.is_none()
@@ -242,20 +353,52 @@ fn prepare_app(
             open_options.table = Some(selected);
         }
     }
-    let opened = opened_source.into_implicit_table()?;
-    let viewport = view::Viewport::new(if config.top_lines.is_some() { 1 } else { 20 }, 8);
+    Ok(Some((opened_source.into_implicit_table()?, open_options)))
+}
+
+fn prepare_app_from_selection(
+    config: &cli::Config,
+    theme_load: theme::ThemeLoad,
+    source: ingest::source::InputSource,
+    report_status: impl FnMut(&str) -> anyhow::Result<()>,
+    select_relation: Option<&mut RelationSelector<'_>>,
+    #[cfg(feature = "saved-views")] invocation: &saved_views::SavedViewInvocation,
+    open_source: impl FnOnce(
+        ingest::source::InputSource,
+        &ingest::OpenOptions,
+    ) -> anyhow::Result<ingest::OpenedSource>,
+) -> anyhow::Result<Option<App>> {
+    let Some((opened, open_options)) = open_selected_source(
+        config,
+        source.clone(),
+        report_status,
+        select_relation,
+        #[cfg(feature = "saved-views")]
+        invocation,
+        open_source,
+    )?
+    else {
+        return Ok(None);
+    };
+    let viewport = view::Viewport::new(20, 8);
     let mut view = view::TableView::from_opened_table(opened, viewport)?;
-    if config.top_lines.is_some() {
-        view.defer_preview_preparation();
-    }
     view = view.with_column_width_mode(config.width);
     #[cfg(feature = "saved-views")]
-    let saved_view = apply_saved_view(config, &mut view)?;
+    let saved_view = apply_selected_saved_view(config, invocation, &mut view);
     #[cfg(feature = "saved-views")]
-    let mut diagnostics = saved_view
-        .as_ref()
-        .map(|saved_view| saved_view.messages.clone())
-        .unwrap_or_default();
+    let mut diagnostics = match invocation {
+        saved_views::SavedViewInvocation::Enabled { warnings, .. } => warnings
+            .iter()
+            .map(format_saved_view_warning)
+            .collect::<Vec<_>>(),
+        saved_views::SavedViewInvocation::Disabled => Vec::new(),
+    };
+    #[cfg(feature = "saved-views")]
+    diagnostics.extend(
+        view.take_saved_binding_warnings()
+            .iter()
+            .map(format_saved_view_warning),
+    );
     #[cfg(not(feature = "saved-views"))]
     let mut diagnostics = Vec::new();
     diagnostics.extend(
@@ -264,17 +407,17 @@ fn prepare_app(
             .iter()
             .map(|warning| format!("theme warning: {}: {}", warning.field, warning.message)),
     );
-    let message = diagnostics.first().cloned();
+    let message = warning_footer(&diagnostics);
     if config.top_lines.is_none() {
         view.goto_user_row(config.start_position.row.max(1));
         if let Some(column) = config.start_position.column {
             view.goto_user_column(column.max(1));
         }
     }
+    view.initialize_source_configuration(open_options)?;
 
     Ok(Some(App {
         source,
-        open_options,
         view,
         popup: None,
         filter_prompt: None,
@@ -298,6 +441,8 @@ fn run_interactive(
 ) -> anyhow::Result<()> {
     loop {
         app.view.poll_source_query();
+        #[cfg(feature = "saved-views")]
+        app.collect_saved_binding_diagnostics();
         let source_status = app.view.take_source_status();
         terminal.terminal_mut().draw(|frame| {
             let area = frame.area();
@@ -435,7 +580,11 @@ fn run_interactive(
         };
         if input_ready {
             if let Event::Key(event) = read()? {
+                #[cfg(feature = "saved-views")]
+                app.collect_saved_binding_diagnostics();
                 if app.handle_key(event)? {
+                    #[cfg(feature = "saved-views")]
+                    app.collect_saved_binding_diagnostics();
                     break;
                 }
             }
@@ -477,33 +626,27 @@ fn full_schema_scan_status(
 }
 
 #[cfg(feature = "saved-views")]
-fn selected_saved_view_source_options(
+fn prepare_saved_view_invocation(
     config: &cli::Config,
-) -> anyhow::Result<ingest::SourceOptionOverrides> {
+    config_root: Option<&Path>,
+) -> anyhow::Result<saved_views::SavedViewInvocation> {
     use crate::cli::SavedViewSelection as CliSavedViewSelection;
     use crate::saved_views::SavedViewSelection;
 
     let target_identity = PathBuf::from(config.target.saved_view_filename());
     let selection = match &config.saved_view {
-        CliSavedViewSelection::Disabled => return Ok(ingest::SourceOptionOverrides::default()),
-        CliSavedViewSelection::Auto => SavedViewSelection::Auto {
+        CliSavedViewSelection::Disabled => None,
+        CliSavedViewSelection::Auto => Some(SavedViewSelection::Auto {
             input_path: &target_identity,
-        },
-        CliSavedViewSelection::Force(name) => SavedViewSelection::Force { name },
+        }),
+        CliSavedViewSelection::Force(name) => Some(SavedViewSelection::Force { name }),
     };
-    let discovered = saved_views::discover_saved_views(None);
-    let Some(selected) = saved_views::select_saved_view(&discovered.views, selection) else {
-        if let CliSavedViewSelection::Force(name) = &config.saved_view {
-            anyhow::bail!("saved view '{name}' was requested but was not found");
-        }
-        return Ok(ingest::SourceOptionOverrides::default());
-    };
-    Ok(selected.view.view.source_options())
+    saved_views::prepare_saved_view(selection, &target_identity, config_root)
+        .map_err(anyhow::Error::msg)
 }
 
 struct App {
     source: ingest::source::InputSource,
-    open_options: ingest::OpenOptions,
     view: view::TableView,
     popup: Option<ui::Popup>,
     filter_prompt: Option<FilterPrompt>,
@@ -542,7 +685,6 @@ struct SavedViewRuntime {
     target_path: Option<PathBuf>,
     view_name: String,
     explicit_locale: Option<String>,
-    messages: Vec<String>,
 }
 
 #[cfg(feature = "saved-views")]
@@ -555,6 +697,20 @@ struct ViewModal {
 }
 
 impl App {
+    #[cfg(feature = "saved-views")]
+    fn collect_saved_binding_diagnostics(&mut self) {
+        let new = self
+            .view
+            .take_saved_binding_warnings()
+            .iter()
+            .map(format_saved_view_warning)
+            .collect::<Vec<_>>();
+        if let Some(message) = warning_footer(&new) {
+            self.message = Some(message);
+        }
+        self.diagnostics.extend(new);
+    }
+
     fn handle_key(&mut self, event: KeyEvent) -> anyhow::Result<bool> {
         if self.popup == Some(ui::Popup::Search) {
             self.handle_search_key(event);
@@ -1063,53 +1219,14 @@ impl App {
             }
             KeyCode::Enter => {
                 let query = modal.draft.clone();
-                if self.view.active_source_query() == Some(&query) {
+                if self.view.active_source_query() == Some(&query) && !modal.native_query_changed {
                     self.popup = None;
                     return;
                 }
-                let source_filters = query
-                    .filters
-                    .iter()
-                    .map(|filter| {
-                        let crate::table::SourceFilterScope::Column(column) = filter.scope else {
-                            return Some(ingest::SourceFilterRequest {
-                                column: "*".to_owned(),
-                                operator: filter.operator,
-                                operand: filter.operand.clone(),
-                            });
-                        };
-                        Some(ingest::SourceFilterRequest {
-                            column: self.view.source_column_name_for_id(column)?,
-                            operator: filter.operator,
-                            operand: filter.operand.clone(),
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>();
-                let source_sort = query
-                    .order_by
-                    .iter()
-                    .map(|sort| {
-                        Some(ingest::SourceSortRequest {
-                            column: self.view.source_column_name_for_id(sort.column)?,
-                            direction: sort.direction,
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>();
-                let (Some(source_filters), Some(source_sort)) = (source_filters, source_sort)
-                else {
-                    modal.error = Some("source query references an unavailable column".to_owned());
-                    self.source_modal = Some(modal);
-                    return;
-                };
-                if self.view.request_source_query(query.clone()) {
-                    self.open_options.limit =
-                        (query.limit != std::num::NonZeroUsize::MAX).then_some(query.limit);
-                    self.open_options.source_filters = source_filters;
-                    self.open_options.source_sort = source_sort;
-                    if modal.native_query_changed {
-                        self.open_options.native_query = query.native_query.clone();
-                        self.open_options.table = None;
-                    }
+                if self
+                    .view
+                    .request_source_query(query, modal.native_query_changed)
+                {
                     self.popup = None;
                     return;
                 }
@@ -1319,11 +1436,10 @@ impl App {
             return;
         };
         let input_filename = self.input_filename();
-        let yaml = self.view.to_saved_view_yaml_with_source_options(
+        let yaml = self.view.to_saved_view_yaml(
             &saved_view.view_name,
             &input_filename,
             saved_view.explicit_locale.as_deref(),
-            &self.open_options,
         );
         let filename = saved_view
             .target_path
@@ -1376,6 +1492,13 @@ impl App {
 
     #[cfg(feature = "saved-views")]
     fn save_view_modal(&mut self, confirmed_overwrite: bool) {
+        let current_yaml = self.saved_view.as_ref().map(|saved_view| {
+            self.view.to_saved_view_yaml(
+                &saved_view.view_name,
+                &self.input_filename(),
+                saved_view.explicit_locale.as_deref(),
+            )
+        });
         let Some(saved_view) = &mut self.saved_view else {
             self.message = Some("saved views are disabled".to_owned());
             return;
@@ -1391,6 +1514,7 @@ impl App {
             modal.confirming_overwrite = true;
             return;
         }
+        modal.yaml = current_yaml.expect("saved view available");
 
         match write_saved_view_atomic(&target_path, &modal.yaml) {
             Ok(()) => {
@@ -1413,20 +1537,7 @@ impl App {
     }
 
     fn reload(&mut self) -> anyhow::Result<()> {
-        if self.source.is_stdin() {
-            return Ok(());
-        }
-
-        let cursor_row = self.view.cursor().row;
-        let viewport = self.view.viewport();
-        let opened =
-            ingest::open_source(self.source.clone(), &self.open_options)?.into_implicit_table()?;
-        let mut reloaded = view::TableView::from_opened_table(opened, viewport)?;
-        reloaded.restore_view_settings_from(&self.view);
-        let restored_column = reloaded.cursor().column;
-        reloaded.goto(cursor_row, restored_column);
-        self.view = reloaded;
-        Ok(())
+        self.view.reload_committed_source(&self.source)
     }
 
     fn info_text(&self) -> String {
@@ -1971,178 +2082,38 @@ impl<'a> From<&'a FilterPrompt> for FilterPromptView<'a> {
 }
 
 #[cfg(feature = "saved-views")]
-fn apply_saved_view(
+fn apply_selected_saved_view(
     config: &cli::Config,
+    invocation: &saved_views::SavedViewInvocation,
     view: &mut view::TableView,
-) -> anyhow::Result<Option<SavedViewRuntime>> {
-    use crate::cli::SavedViewSelection as CliSavedViewSelection;
-    use crate::ops::sort::{SortDirection, SortMode};
-    use crate::saved_views::{self, FilterAction, SavedViewSelection, SortKind};
-
-    let target_identity = PathBuf::from(config.target.saved_view_filename());
-    let selection = match &config.saved_view {
-        CliSavedViewSelection::Disabled => return Ok(None),
-        CliSavedViewSelection::Auto => SavedViewSelection::Auto {
-            input_path: &target_identity,
-        },
-        CliSavedViewSelection::Force(name) => SavedViewSelection::Force { name },
-    };
-
-    let target_path = placeholder_saved_view_path(&target_identity);
-    let view_name = target_path
-        .as_deref()
-        .and_then(Path::file_stem)
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("view")
-        .to_owned();
-    let discovered = saved_views::discover_saved_views(None);
-    let mut messages = discovered
-        .warnings
-        .iter()
-        .map(format_saved_view_warning)
-        .collect::<Vec<_>>();
-    let Some(selected) = saved_views::select_saved_view(&discovered.views, selection) else {
-        if let CliSavedViewSelection::Force(name) = &config.saved_view {
-            anyhow::bail!("saved view '{name}' was requested but was not found");
+) -> Option<SavedViewRuntime> {
+    match invocation {
+        saved_views::SavedViewInvocation::Disabled => None,
+        saved_views::SavedViewInvocation::Enabled {
+            selected: Some(selected),
+            ..
+        } => {
+            let explicit_locale = selected.view.view.locale.clone();
+            view.install_saved_binding(selected.view.view.clone(), config.sorted != Some(false));
+            Some(SavedViewRuntime {
+                source_path: Some(selected.path.clone()),
+                target_path: Some(selected.path.clone()),
+                view_name: selected.canonical_name.clone(),
+                explicit_locale,
+            })
         }
-        return Ok(Some(SavedViewRuntime {
-            source_path: None,
+        saved_views::SavedViewInvocation::Enabled {
+            selected: None,
             target_path,
             view_name,
+            ..
+        } => Some(SavedViewRuntime {
+            source_path: None,
+            target_path: target_path.clone(),
+            view_name: view_name.clone(),
             explicit_locale: None,
-            messages,
-        }));
-    };
-    messages.extend(selected.view.warnings.iter().map(format_saved_view_warning));
-    messages.extend(selected.warnings.iter().map(format_saved_view_warning));
-    let Some(header) = view.header() else {
-        return Ok(Some(SavedViewRuntime {
-            source_path: Some(selected.view.path.clone()),
-            target_path: Some(selected.view.path.clone()),
-            view_name: selected.view.canonical_name.clone(),
-            explicit_locale: selected.view.view.view.locale.clone(),
-            messages,
-        }));
-    };
-    let header = header.to_vec();
-    view.set_view_null_placement(selected.view.view.view.nulls);
-    let structured_definition = view.table_definition().filter(|definition| {
-        definition
-            .columns
-            .iter()
-            .any(|column| column.source_identity.canonical_key().is_some())
-    });
-    let structured_schema_provisional = structured_definition.is_some_and(|definition| {
-        definition.schema_state == crate::table::SchemaState::Provisional
-    });
-    let resolved = if let Some(definition) = structured_definition {
-        saved_views::resolve_structured_columns(&selected.view.view, definition)
-    } else {
-        saved_views::resolve_columns(&selected.view.view, &header)
-    };
-    messages.extend(resolved.warnings.iter().map(format_saved_view_warning));
-    view.apply_saved_columns(&resolved, selected.view.view.view.locale.as_deref());
-
-    let sort_keys = selected
-        .view
-        .view
-        .view
-        .sort
-        .iter()
-        .filter(|_| config.sorted != Some(false))
-        .filter_map(|sort| {
-            let column = view
-                .table_definition()
-                .filter(|definition| {
-                    definition
-                        .columns
-                        .iter()
-                        .any(|column| column.source_identity.canonical_key().is_some())
-                })
-                .and_then(|definition| {
-                    saved_views::resolve_structured_column_reference(definition, &sort.column)
-                })
-                .or_else(|| saved_views::resolve_column_reference(&header, &sort.column))?;
-            let direction = match sort.direction {
-                saved_views::SortDirection::Asc => SortDirection::Ascending,
-                saved_views::SortDirection::Desc => SortDirection::Descending,
-            };
-            let mode = match sort.kind {
-                SortKind::Lexical => SortMode::Lexical,
-                SortKind::Natural => SortMode::Natural,
-                SortKind::Numeric => SortMode::Numeric,
-                SortKind::Type => view.type_sort_mode_for_source(column),
-            };
-            Some(view::ActiveSortKey {
-                column,
-                mode,
-                direction,
-                nulls: view.resolved_null_placement(column),
-            })
-        })
-        .collect::<Vec<_>>();
-    view.apply_saved_sort_keys(sort_keys);
-
-    let mut unresolved_filters = Vec::new();
-    for filter in &selected.view.view.view.filters {
-        let column = view
-            .table_definition()
-            .filter(|definition| {
-                definition
-                    .columns
-                    .iter()
-                    .any(|column| column.source_identity.canonical_key().is_some())
-            })
-            .and_then(|definition| {
-                saved_views::resolve_structured_column_reference(definition, &filter.column)
-            })
-            .or_else(|| saved_views::resolve_column_reference(&header, &filter.column));
-        let Some(column) = column else {
-            if structured_schema_provisional && filter.column.starts_with('/') {
-                unresolved_filters.push(filter.clone());
-            }
-            continue;
-        };
-        let mode = match filter.action {
-            FilterAction::In => FilterMode::In,
-            FilterAction::Out => FilterMode::Out,
-        };
-        let kind = match filter.kind {
-            saved_views::FilterKind::Text => FilterKind::Text,
-            saved_views::FilterKind::Regex => FilterKind::Regex,
-            saved_views::FilterKind::Numeric => FilterKind::Numeric,
-        };
-        let _ = view.apply_source_filter(column, mode, kind, filter.condition.clone());
+        }),
     }
-    if structured_schema_provisional {
-        view.retain_pending_saved_operations(
-            if config.sorted == Some(false) {
-                Vec::new()
-            } else {
-                selected.view.view.view.sort.clone()
-            },
-            unresolved_filters,
-        );
-    }
-    Ok(Some(SavedViewRuntime {
-        source_path: Some(selected.view.path.clone()),
-        target_path: Some(selected.view.path.clone()),
-        view_name: selected.view.canonical_name.clone(),
-        explicit_locale: selected.view.view.view.locale.clone(),
-        messages,
-    }))
-}
-
-#[cfg(feature = "saved-views")]
-fn placeholder_saved_view_path(input: &Path) -> Option<PathBuf> {
-    let view_dir = saved_views::saved_view_dir(None)?;
-    let basename = input.file_name()?.to_str()?;
-    let stem = if let Some((stem, _)) = basename.rsplit_once('.') {
-        stem
-    } else {
-        basename
-    };
-    Some(view_dir.join(format!("{stem}.yml")))
 }
 
 #[cfg(feature = "saved-views")]
@@ -2419,7 +2390,7 @@ fn help_popup_area(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "sqlite")]
+    #[cfg(any(feature = "sqlite", feature = "saved-views"))]
     use clap::Parser;
     use crossterm::event::KeyModifiers;
     use std::cell::Cell;
@@ -2433,6 +2404,18 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     };
+    #[cfg(any(feature = "sqlite", feature = "elasticsearch"))]
+    fn write_frozen_test_output(
+        app: &App,
+        format: output::OutputFormat,
+        writer: &mut dyn Write,
+    ) -> anyhow::Result<()> {
+        let color = output::ColorOutput::Never;
+        let projection = app
+            .view
+            .prepare_projection(output::requirements(format, color)?, &app.theme)?;
+        output::write_prepared(format, color, &projection.output, None, writer)
+    }
 
     #[cfg(feature = "elasticsearch")]
     struct MockElasticsearchResponse {
@@ -2684,7 +2667,6 @@ mod tests {
     fn app_with_rows(rows: Vec<Vec<String>>) -> App {
         App {
             source: ingest::source::InputSource::Stdin,
-            open_options: ingest::OpenOptions::default(),
             view: view::TableView::classify(rows, view::Viewport::new(10, 4)),
             popup: None,
             filter_prompt: None,
@@ -2709,9 +2691,11 @@ mod tests {
             .expect("table");
         let mut app = app_with_rows(rows(&[&["placeholder"], &["value"]]));
         app.source = ingest::source::InputSource::Path(path);
-        app.open_options = options;
         app.view =
             view::TableView::from_opened_table(opened, view::Viewport::new(8, 80)).expect("view");
+        app.view
+            .initialize_source_configuration(options)
+            .expect("committed source");
         app
     }
 
@@ -2724,9 +2708,11 @@ mod tests {
             .expect("Elasticsearch table");
         let mut app = app_with_rows(rows(&[&["placeholder"], &["value"]]));
         app.source = source;
-        app.open_options = options;
         app.view =
             view::TableView::from_opened_table(opened, view::Viewport::new(8, 80)).expect("view");
+        app.view
+            .initialize_source_configuration(options)
+            .expect("committed Elasticsearch source");
         app
     }
 
@@ -2759,6 +2745,132 @@ mod tests {
         };
         (directory, app_for_source(path, options))
     }
+    #[cfg(all(feature = "sqlite", feature = "saved-views"))]
+    #[test]
+    fn native_selection_commits_only_after_successful_replacement() {
+        let (_directory, mut app) = sqlite_app(
+            &[
+                "CREATE TABLE events(id INTEGER PRIMARY KEY, name TEXT)",
+                "INSERT INTO events VALUES (1, 'Ada')",
+                "INSERT INTO events VALUES (2, 'Grace')",
+            ],
+            "events",
+        );
+        let native = "SELECT name AS label FROM events ORDER BY id DESC";
+        let mut query = app
+            .view
+            .active_source_query()
+            .expect("generated query")
+            .clone();
+        query.native_query = Some(native.to_owned());
+        assert!(app.view.request_source_query(query, true));
+        let pending = app.view.to_saved_view_yaml("events", "events.db", None);
+        let source = saved_views::parse_saved_view_yaml(&pending)
+            .expect("pending YAML")
+            .view
+            .source;
+        assert_eq!(source.table.as_deref(), Some("events"));
+        assert!(source.query.is_none());
+
+        app.view
+            .await_latest_source_query()
+            .expect("native activation");
+        assert_eq!(app.view.visible_rows_vec(), rows(&[&["Grace"], &["Ada"]]));
+        let committed = app.view.to_saved_view_yaml("events", "events.db", None);
+        let source = saved_views::parse_saved_view_yaml(&committed)
+            .expect("committed YAML")
+            .view
+            .source;
+        assert!(source.table.is_none());
+        assert_eq!(source.query.as_deref(), Some(native));
+        assert!(!committed.contains("column_1"));
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "saved-views"))]
+    #[test]
+    fn rejected_native_query_keeps_committed_base_in_save_and_replay() {
+        let directory = tempfile::tempdir().expect("fixture");
+        let path = directory.path().join("events.db");
+        create_sqlite_database(
+            &path,
+            &[
+                "CREATE TABLE events(id INTEGER PRIMARY KEY, name TEXT)",
+                "INSERT INTO events VALUES (1, 'Ada')",
+                "INSERT INTO events VALUES (2, 'Grace')",
+            ],
+        );
+        let accepted = "SELECT name AS label FROM events ORDER BY id";
+        let rejected = "SELECT missing AS label FROM events ORDER BY id";
+        let mut app = app_for_source(
+            path.clone(),
+            ingest::OpenOptions {
+                format: ingest::InputFormat::Sqlite,
+                native_query: Some(accepted.to_owned()),
+                ..ingest::OpenOptions::default()
+            },
+        );
+        assert_eq!(app.view.visible_rows_vec(), rows(&[&["Ada"], &["Grace"]]));
+
+        app.open_source_config_modal();
+        let modal = app.source_modal.as_mut().expect("source configuration");
+        modal.draft.native_query = Some(rejected.to_owned());
+        modal.native_query_changed = true;
+        app.handle_key(key(KeyCode::Enter))
+            .expect("accept pending query");
+        let pending_yaml = app.view.to_saved_view_yaml("events", "events.db", None);
+        assert_eq!(
+            saved_views::parse_saved_view_yaml(&pending_yaml)
+                .expect("pending YAML")
+                .view
+                .source
+                .query
+                .as_deref(),
+            Some(accepted)
+        );
+        app.view
+            .await_latest_source_query()
+            .expect_err("rejected query fails");
+        assert_eq!(app.view.visible_rows_vec(), rows(&[&["Ada"], &["Grace"]]));
+
+        let yaml = app.view.to_saved_view_yaml("events", "events.db", None);
+        let saved = saved_views::parse_saved_view_yaml(&yaml).expect("saved YAML");
+        assert_eq!(saved.view.source.query.as_deref(), Some(accepted));
+        assert!(!yaml.contains(rejected));
+        let replay = ingest::OpenOptions::merge(
+            ingest::OpenOptions::default(),
+            &saved.view.source_options(),
+            &ingest::SourceOptionOverrides::default(),
+        );
+        let reopened = app_for_source(path.clone(), replay);
+        assert_eq!(
+            reopened.view.visible_rows_vec(),
+            rows(&[&["Ada"], &["Grace"]])
+        );
+
+        app.reload().expect("reload committed base");
+        assert_eq!(app.view.visible_rows_vec(), rows(&[&["Ada"], &["Grace"]]));
+        let mut pending = app
+            .view
+            .active_source_query()
+            .expect("reloaded query")
+            .clone();
+        pending.native_query = Some("SELECT name AS label FROM events ORDER BY id DESC".to_owned());
+        assert!(app.view.request_source_query(pending, true));
+        app.reload()
+            .expect("reload supersedes pending native query");
+        app.view
+            .await_latest_source_query()
+            .expect("latest reload activated");
+        assert_eq!(app.view.visible_rows_vec(), rows(&[&["Ada"], &["Grace"]]));
+        assert_eq!(
+            app.view
+                .committed_open_options()
+                .expect("committed source")
+                .native_query
+                .as_deref(),
+            Some(accepted)
+        );
+    }
 
     #[cfg(feature = "sqlite")]
     fn sqlite_artifact_snapshot(path: &std::path::Path) -> Vec<(String, Option<Vec<u8>>)> {
@@ -2773,6 +2885,113 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn startup_opens_and_binds_the_same_selected_document_after_an_on_disk_edit() {
+        let root = tempfile::tempdir().expect("config root");
+        let bundle = root.path().join("tview/views/nested");
+        std::fs::create_dir_all(&bundle).expect("view bundle");
+        let view_path = bundle.join("chosen.yml");
+        std::fs::write(
+            &view_path,
+            "name: chosen\nfilenames: ['*']\nsource:\n  limit: 1\nview:\n  columns:\n    Name: {label: ORIGINAL, format: uppercase}\n",
+        ).expect("selected YAML");
+        let input_path = root.path().join("data.csv");
+        std::fs::write(&input_path, "Name\nalpha\nbeta\n").expect("CSV input");
+        let filename = input_path.to_string_lossy().into_owned();
+        let args = cli::Args::try_parse_from([
+            "tview",
+            "--view",
+            "chosen",
+            "--output",
+            "table",
+            filename.as_str(),
+        ])
+        .expect("arguments");
+        let config = cli::Config::from_args(args).expect("configuration");
+        let source = ingest::source::InputSource::Path(input_path);
+        let selected = prepare_saved_view_invocation(&config, Some(root.path()))
+            .expect("first invocation selection");
+        let theme = || theme::ThemeLoad {
+            theme: theme::default_theme(),
+            warnings: Vec::new(),
+        };
+        let first = prepare_app_from_selection(
+            &config, theme(), source.clone(), |_| Ok(()), None, &selected,
+            |source, options| {
+                assert_eq!(options.limit.map(|limit| limit.get()), Some(1));
+                std::fs::write(
+                    &view_path,
+                    "name: chosen\nfilenames: ['*']\nsource:\n  limit: 2\nview:\n  columns:\n    Name: {label: CHANGED, format: lowercase}\n",
+                ).expect("external saved YAML edit during source open");
+                ingest::open_source(source, options)
+            },
+        ).expect("open first").expect("selected table");
+        assert_eq!(
+            first.view.output_header(),
+            Some(vec!["ORIGINAL".to_owned()])
+        );
+        assert_eq!(
+            first
+                .view
+                .committed_open_options()
+                .and_then(|options| options.limit)
+                .map(|limit| limit.get()),
+            Some(1),
+        );
+        assert_eq!(
+            first
+                .saved_view
+                .as_ref()
+                .and_then(|saved| saved.source_path.as_ref()),
+            Some(&view_path),
+        );
+        let first_projection = first
+            .view
+            .prepare_projection(
+                output::requirements(output::OutputFormat::Table, output::ColorOutput::Never)
+                    .unwrap(),
+                &first.theme,
+            )
+            .expect("first result");
+        assert_eq!(first_projection.output.rows.len(), 1);
+
+        let fresh = prepare_saved_view_invocation(&config, Some(root.path()))
+            .expect("fresh invocation selection");
+        let second = prepare_app_from_selection(
+            &config,
+            theme(),
+            source,
+            |_| Ok(()),
+            None,
+            &fresh,
+            ingest::open_source,
+        )
+        .expect("open fresh")
+        .expect("selected table");
+        assert_eq!(
+            second.view.output_header(),
+            Some(vec!["CHANGED".to_owned()])
+        );
+        assert_eq!(
+            second
+                .view
+                .committed_open_options()
+                .and_then(|options| options.limit)
+                .map(|limit| limit.get()),
+            Some(2),
+        );
+        let second_projection = second
+            .view
+            .prepare_projection(
+                output::requirements(output::OutputFormat::Table, output::ColorOutput::Never)
+                    .unwrap(),
+                &second.theme,
+            )
+            .expect("second result");
+        assert_eq!(second_projection.output.rows.len(), 2);
     }
 
     #[cfg(feature = "sqlite")]
@@ -2829,7 +3048,7 @@ mod tests {
             column: id,
             direction: crate::table::SortDirection::Descending,
         }];
-        assert!(app.view.request_source_query(query));
+        assert!(app.view.request_source_query(query, false));
         assert!(app.view.source_query_is_pending());
 
         let mut output = Vec::new();
@@ -2837,13 +3056,7 @@ mod tests {
             || Ok(()),
             || {
                 app.view.await_latest_source_query()?;
-                crate::output::write_view(
-                    crate::output::OutputFormat::Table,
-                    crate::output::ColorOutput::Never,
-                    &mut app.view,
-                    &app.theme,
-                    &mut output,
-                )
+                write_frozen_test_output(&app, output::OutputFormat::Table, &mut output)
             },
         )
         .expect("post-interactive export");
@@ -2854,6 +3067,60 @@ mod tests {
         let ada = output.find("Ada").expect("latest third row");
         assert!(linus < grace && grace < ada);
         assert!(!output.contains("SELECT"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn latest_activation_failure_blocks_export_until_newer_success() {
+        let (_directory, mut app) = sqlite_app(
+            &[
+                "CREATE TABLE events(id INTEGER PRIMARY KEY, name TEXT)",
+                "INSERT INTO events VALUES (1, 'Ada')",
+                "INSERT INTO events VALUES (2, 'Grace')",
+            ],
+            "events",
+        );
+        let mut bad = app
+            .view
+            .active_source_query()
+            .expect("source query")
+            .clone();
+        bad.native_query = Some("SELECT missing FROM events".to_owned());
+        assert!(app.view.request_source_query(bad, true));
+        assert!(app.view.await_latest_source_query().is_err());
+        let _ = app.view.take_source_status();
+
+        let mut output = Vec::new();
+        let result = restore_before_export(
+            || Ok(()),
+            || {
+                app.view.await_latest_source_query()?;
+                write_frozen_test_output(&app, output::OutputFormat::Jsonl, &mut output)
+            },
+        );
+        assert!(
+            result.is_err(),
+            "consumed TUI status does not clear latest failure"
+        );
+        assert!(output.is_empty(), "failed revision emitted adapter bytes");
+
+        let mut valid = app
+            .view
+            .active_source_query()
+            .expect("old committed query")
+            .clone();
+        valid.native_query = Some("SELECT name FROM events ORDER BY id DESC".to_owned());
+        assert!(app.view.request_source_query(valid, true));
+        app.view
+            .await_latest_source_query()
+            .expect("newer activation");
+        restore_before_export(
+            || Ok(()),
+            || write_frozen_test_output(&app, output::OutputFormat::Jsonl, &mut output),
+        )
+        .expect("newer result exported");
+        let emitted = String::from_utf8(output).expect("JSONL output");
+        assert!(emitted.find("Grace").expect("first") < emitted.find("Ada").expect("second"));
     }
 
     #[cfg(feature = "sqlite")]
@@ -2918,6 +3185,80 @@ mod tests {
             );
             drop(held_writer);
         }
+    }
+
+    #[test]
+    fn committed_opening_choices_survive_reload_without_reinterpreting_data() {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let delimited_path = dir.path().join("data.csv");
+        std::fs::write(&delimited_path, "name;amount\n'A;B';1\n").expect("delimited data");
+        let mut csv = app_for_source(
+            delimited_path,
+            ingest::OpenOptions {
+                format: ingest::InputFormat::Delimited,
+                delimited: ingest::ParseOptions {
+                    delimiter: Some(b';'),
+                    quote_char: b'\'',
+                    ..ingest::ParseOptions::default()
+                },
+                ..ingest::OpenOptions::default()
+            },
+        );
+        let interpreted = csv.view.visible_rows_vec();
+        assert!(interpreted
+            .iter()
+            .any(|row| row.iter().any(|cell| cell == "A;B")));
+        csv.reload().expect("reload delimited");
+        assert_eq!(csv.view.visible_rows_vec(), interpreted);
+        assert_eq!(
+            csv.view
+                .committed_open_options()
+                .expect("committed")
+                .delimited
+                .delimiter,
+            Some(b';')
+        );
+
+        let json_path = dir.path().join("nested.json");
+        std::fs::write(
+            &json_path,
+            r#"{"payload":[{"a":1},{"b":2}],"ignored":[{"x":3}]}"#,
+        )
+        .expect("JSON data");
+        let mut json = app_for_source(
+            json_path,
+            ingest::OpenOptions {
+                format: ingest::InputFormat::Json,
+                json_path: Some("/payload".parse().expect("JSON path")),
+                schema_scan: ingest::SchemaScan::Full,
+                ..ingest::OpenOptions::default()
+            },
+        );
+        assert_eq!(
+            json.view
+                .committed_open_options()
+                .expect("committed")
+                .schema_scan,
+            ingest::SchemaScan::Full
+        );
+        assert_eq!(
+            json.view
+                .committed_open_options()
+                .expect("committed")
+                .json_path
+                .as_ref()
+                .map(|path| path.as_str()),
+            Some("/payload")
+        );
+        json.reload().expect("reload selected JSON");
+        assert_eq!(json.view.column_count(), 2);
+        assert_eq!(
+            json.view
+                .committed_open_options()
+                .expect("committed")
+                .schema_scan,
+            ingest::SchemaScan::Full
+        );
     }
 
     #[test]
@@ -3004,7 +3345,6 @@ mod tests {
     fn app_with_saved_view_target(rows: Vec<Vec<String>>, target_path: PathBuf) -> App {
         App {
             source: ingest::source::InputSource::Path(PathBuf::from("cat_shards.txt")),
-            open_options: ingest::OpenOptions::default(),
             view: view::TableView::classify(rows, view::Viewport::new(10, 4)),
             popup: None,
             filter_prompt: None,
@@ -3020,7 +3360,6 @@ mod tests {
                 target_path: Some(target_path),
                 view_name: "cat_shards".to_owned(),
                 explicit_locale: None,
-                messages: Vec::new(),
             }),
             view_modal: None,
         }
@@ -3149,15 +3488,11 @@ mod tests {
     }
 
     #[test]
-    fn query_popup_actions_document_their_keyboard_shortcuts() {
-        assert_eq!(QUERY_POPUP_ACTIONS, ["Copy (y)", "Close (Enter/Esc)"]);
-    }
-
-    #[test]
     fn source_config_surfaces_unresolvable_columns_without_persisting_them() {
         let file = tempfile::NamedTempFile::new().expect("csv fixture");
         std::fs::write(file.path(), "name\nalpha\n").expect("csv");
         let mut app = app_for_source(file.path().to_path_buf(), ingest::OpenOptions::default());
+        let original_rows = app.view.visible_rows_vec();
         app.open_source_config_modal();
         app.source_modal
             .as_mut()
@@ -3177,11 +3512,12 @@ mod tests {
 
         assert_eq!(app.popup, Some(ui::Popup::SourceConfig));
         assert!(app
-            .source_modal
-            .as_ref()
-            .and_then(|modal| modal.error.as_deref())
-            .is_some_and(|error| error.contains("unavailable column")));
-        assert!(app.open_options.source_filters.is_empty());
+            .view
+            .committed_open_options()
+            .expect("committed")
+            .source_filters
+            .is_empty());
+        assert_eq!(app.view.visible_rows_vec(), original_rows);
     }
 
     #[cfg(feature = "sqlite")]
@@ -3349,14 +3685,7 @@ mod tests {
         assert_eq!(app.view.header().unwrap(), ["count"]);
         assert_eq!(app.view.current_raw_cell(), Some("2"));
         let mut output = Vec::new();
-        crate::output::write_view(
-            crate::output::OutputFormat::Table,
-            crate::output::ColorOutput::Never,
-            &mut app.view,
-            &app.theme,
-            &mut output,
-        )
-        .unwrap();
+        write_frozen_test_output(&app, output::OutputFormat::Table, &mut output).unwrap();
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("count"));
         assert!(output.contains('2'));
@@ -3438,12 +3767,9 @@ mod tests {
             ..ingest::OpenOptions::default()
         };
         let app = app_for_elasticsearch(&server, options);
-        let yaml = app.view.to_saved_view_yaml_with_source_options(
-            "errors",
-            &app.input_filename(),
-            None,
-            &app.open_options,
-        );
+        let yaml = app
+            .view
+            .to_saved_view_yaml("errors", &app.input_filename(), None);
         let parsed = saved_views::parse_saved_view_yaml(&yaml).expect("generated YAML");
 
         assert_eq!(parsed.view.source.query.as_deref(), Some("FROM logs-*"));
@@ -3559,7 +3885,10 @@ mod tests {
         assert_eq!(app.popup, None);
         assert!(!app.view.source_query_is_pending());
         assert_eq!(app.view.active_source_query(), Some(&active));
-        assert_eq!(app.open_options.limit, None);
+        assert_eq!(
+            app.view.committed_open_options().expect("committed").limit,
+            None
+        );
     }
 
     #[test]
@@ -3583,8 +3912,18 @@ mod tests {
         app.handle_key(key(KeyCode::Enter)).expect("apply draft");
         app.view.await_latest_source_query().expect("source result");
 
-        assert_eq!(app.open_options.limit, None);
-        assert_eq!(app.open_options.source_filters.len(), 1);
+        assert_eq!(
+            app.view.committed_open_options().expect("committed").limit,
+            None
+        );
+        assert_eq!(
+            app.view
+                .committed_open_options()
+                .expect("committed")
+                .source_filters
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -3594,27 +3933,7 @@ mod tests {
         writeln!(file, "alpha").expect("write row");
         writeln!(file, "beta").expect("write row");
 
-        let mut app = App {
-            source: ingest::source::InputSource::Path(file.path().to_path_buf()),
-            open_options: ingest::OpenOptions::default(),
-            view: view::TableView::classify(
-                rows(&[&["Name"], &["alpha"], &["beta"]]),
-                view::Viewport::new(10, 4),
-            ),
-            popup: None,
-            filter_prompt: None,
-            column_info: None,
-            source_modal: None,
-            search_query: String::new(),
-            keys: command::KeyInterpreter::default(),
-            message: None,
-            diagnostics: Vec::new(),
-            theme: theme::default_theme(),
-            #[cfg(feature = "saved-views")]
-            saved_view: None,
-            #[cfg(feature = "saved-views")]
-            view_modal: None,
-        };
+        let mut app = app_for_source(file.path().to_path_buf(), ingest::OpenOptions::default());
         app.view
             .apply_filter(0, FilterMode::In, FilterKind::Text, "alp".to_owned())
             .expect("apply filter");

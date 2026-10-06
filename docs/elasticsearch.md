@@ -2,7 +2,7 @@
 type: Guide
 title: Elasticsearch sources
 description: ES|QL queries, index selection, authentication, and source limits.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # Elasticsearch sources
@@ -36,8 +36,13 @@ For a selected index or data stream, Tview reads mappings and field capabilities
 to build a catalog including nested fields, multifields, runtime fields, and
 cross-index conflicts. The displayed columns come from the ES|QL response, since
 `STATS`, `EVAL`, and `KEEP` can change them. Query-only startup skips mapping
-discovery. Successful queries replace the rows and column definitions together;
-failed or superseded requests leave the prior result visible.
+discovery. A replacement commits its base query and source operations only
+after execution, result loading, and view reconstruction succeed together.
+Failed or superseded requests leave the prior rows and committed configuration
+available for saving and reload. Reload supersedes pending work and reopens
+the committed selection; compatible local column settings follow source
+identity, not a reused column position. Native query and source operations
+stay distinct from the composed query displayed for inspection.
 
 ## Authentication
 

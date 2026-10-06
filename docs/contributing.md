@@ -2,7 +2,7 @@
 type: Guide
 title: Contributor guide
 description: Ownership, compiler support, checks, and documentation boundaries.
-generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:16:36Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # Contributor guide
@@ -92,6 +92,43 @@ deltas needs a reviewed `no-spec-deltas.md` explanation. Historical archives
 stay as history when a later change updates the same requirement. Unrelated
 active work does not block a PR. The gate never syncs or archives the
 contributor's files.
+
+## Source, binding, and output boundaries
+
+Keep source requests separate from the committed source configuration. Publish
+that configuration only with a successfully loaded source result and rebuilt
+view; saves and reloads take their source truth from the committed result.
+Reload supersedes pending work, preserves compatible live view state by durable
+source identity, and does not rediscover saved YAML. Latest activation failure
+blocks final interactive export rather than substituting previously visible
+rows. See [SQLite](sqlite.md), [Elasticsearch](elasticsearch.md), and
+[saved views](saved-views.md) for the user-facing boundaries.
+
+Select and validate one saved-view snapshot for an invocation. Apply CLI source
+precedence before opening, then bind presentation against that result's schema.
+Bind column metadata before sort/filter interpretation, including late
+canonical columns. Distinguish missing and ambiguous references from present
+numeric operations that lack the required profile. Deliver each binding
+warning once without putting it in output stdout.
+
+Keep output selection, late binding, accepted-row field presence, and remainder
+evidence in complete-or-prefix projection preparation. Serialize only the
+frozen projection; writers must not fetch source rows or change live view
+configuration, stores, or screen state. Whole-result sorting, numeric filter
+profiles, and explicit full-schema scans can require complete traversal.
+Source-native limits still bound the result; local filters never refill it.
+Retain schema deltas consumed from a shared store even when preparation fails;
+replay them on the next ordinary viewer progress without publishing partial
+output or changing the frozen view's presentation.
+See [CLI output](cli-contract.md) and [large files](large-files.md).
+
+Resolve conditional colors from configured YAML strings into foregrounds for
+both TUI and colored table output. Keep theme aliases exact, rule order stable,
+and complete-result versus emitted-prefix profile scopes separate. Do not
+profile solely for color in plain table, JSON, or JSONL output. The measured
+color-work evidence belongs to the active OpenSpec change, not this guide;
+do not claim a general speedup without measurement. See
+[themes](themes.md) and [saved views](saved-views.md#conditional-colors).
 
 ## Unsafe code boundary
 

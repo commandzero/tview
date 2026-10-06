@@ -1,6 +1,6 @@
 mod column;
+pub(crate) mod render;
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -12,15 +12,18 @@ use crate::ingest::OpenedTable;
 use crate::ops::filter::{ActiveFilter, FilterCondition, FilterKind, FilterMode, FilterParseError};
 use crate::ops::search::CaseInsensitiveQuery;
 use crate::ops::sort::{
-    parse_bool_key, parse_numeric_scalar, sort_rows_by_specs, NumericColumnProfile, SortDirection,
-    SortMode, SortSpec,
+    parse_numeric_scalar, sort_rows_by_specs, NumericColumnProfile, SortDirection, SortMode,
+    SortSpec,
 };
 use crate::table::{
     InMemoryTable, NullPlacement, RowCount, RowIndex, SourceGeneration, TableDefinition, TableStore,
 };
 #[cfg(feature = "saved-views")]
 use crate::theme::ConditionalValue;
-use crate::theme::{gradient_color_ref, identifier_color_ref, ConditionalColorRule};
+use crate::theme::{
+    ColorProfileDemand, ColorProfileScope, ColumnColorProfile, CompiledColumnColors,
+    ConditionalColorRule, ResolvedTheme,
+};
 use column::{ColumnIndex, Columns};
 
 const MAX_ACTIVE_SORT_KEYS: usize = 3;
@@ -43,6 +46,16 @@ enum QueryRefresh {
     Failed,
 }
 
+enum CandidateRestoration {
+    Stable {
+        cursor_identity: Option<crate::table::StableRowIdentity>,
+        mark_identity: Option<crate::table::StableRowIdentity>,
+    },
+    Reload {
+        cursor_row: usize,
+    },
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColumnWidthMode {
     #[default]
@@ -58,8 +71,8 @@ pub struct Position {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VisibleCellStyleContext<'a> {
-    pub(crate) conditional_color: Option<Cow<'a, str>>,
+pub(crate) struct VisibleCellStyleContext {
+    pub(crate) conditional_color: Option<ratatui::style::Color>,
     pub(crate) search_match: bool,
 }
 
@@ -161,7 +174,7 @@ pub struct ColumnInfoUpdate {
     reason = "saved-views metadata variants are feature-applied"
 )]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum ColumnTypeMetadata {
+pub(crate) enum ColumnTypeMetadata {
     #[default]
     Text,
     Date,
@@ -176,7 +189,7 @@ enum ColumnTypeMetadata {
 
 #[allow(dead_code, reason = "saved-views display variants are feature-applied")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum DisplayFormatMetadata {
+pub(crate) enum DisplayFormatMetadata {
     #[default]
     Plain,
     Locale,
@@ -252,18 +265,12 @@ impl LocaleMetadata {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ColumnDisplayMetadata {
-    column_type: ColumnTypeMetadata,
-    format: DisplayFormatMetadata,
+pub(crate) struct ColumnDisplayMetadata {
+    pub(crate) column_type: ColumnTypeMetadata,
+    pub(crate) type_explicit: bool,
+    pub(crate) format: DisplayFormatMetadata,
     mask: Option<NumberMaskMetadata>,
     locale: LocaleMetadata,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ColumnColorMetadata {
-    numeric_min_max: Option<(f64, f64)>,
-    identifier_color_refs: BTreeMap<usize, BTreeMap<String, String>>,
-    gradient_color_refs: BTreeMap<usize, Vec<String>>,
 }
 
 impl Viewport {
@@ -277,8 +284,63 @@ impl Viewport {
 }
 
 #[derive(Debug, Clone)]
+struct PendingSourceResult {
+    revision: u64,
+    options: crate::ingest::OpenOptions,
+    cursor_identity: Option<crate::table::StableRowIdentity>,
+    mark_identity: Option<crate::table::StableRowIdentity>,
+}
+
+fn compatible_source_column(
+    old: &crate::table::ColumnDefinition,
+    new: &crate::table::ColumnDefinition,
+) -> bool {
+    use crate::table::ColumnSourceIdentity;
+    let lineage = match (&old.source_identity, &new.source_identity) {
+        (
+            ColumnSourceIdentity::RelationColumn {
+                relation: left,
+                name: left_name,
+                ..
+            },
+            ColumnSourceIdentity::RelationColumn {
+                relation: right,
+                name: right_name,
+                ..
+            },
+        ) => left == right && left_name == right_name,
+        (
+            ColumnSourceIdentity::Delimited {
+                ordinal: left,
+                name: left_name,
+            },
+            ColumnSourceIdentity::Delimited {
+                ordinal: right,
+                name: right_name,
+            },
+        ) => left == right && left_name == right_name,
+        (left, right) => left == right,
+    };
+    if !lineage {
+        return false;
+    }
+    if matches!((&old.source_declared_type, &new.source_declared_type),
+        (Some(left), Some(right)) if left != right)
+    {
+        return false;
+    }
+    use crate::table::LogicalType;
+    matches!(
+        (old.source_type, new.source_type),
+        (left, right) if left == right
+            || matches!(left, LogicalType::Unknown | LogicalType::Null)
+            || matches!(right, LogicalType::Unknown | LogicalType::Null)
+            || matches!((left, right), (LogicalType::Integer, LogicalType::Float)
+                | (LogicalType::Float, LogicalType::Integer))
+    )
+}
+#[derive(Debug, Clone)]
 pub struct TableView {
-    preview_preparing: bool,
     table_definition: Option<TableDefinition>,
     source_store: Option<InMemoryTable>,
     incremental_store: Option<SharedTableStore>,
@@ -290,11 +352,14 @@ pub struct TableView {
     source_result_extent: Option<crate::table::ResultExtent>,
     source_result_is_partial: bool,
     source_result_warnings: Vec<String>,
+    /// Schema consumed during projection preparation, including failed attempts,
+    /// is replayed on ordinary viewer progress without changing export screen state.
+    pending_projection_schema: RefCell<Option<(SourceGeneration, crate::table::SchemaDelta)>>,
     source_query_provenance: Option<crate::table::NativeQueryArtifact>,
     source_query_coordinator: Rc<RefCell<crate::table::SourceQueryCoordinator>>,
-    pending_source_query: Option<crate::table::SourceQuery>,
-    pending_cursor_identity: Option<crate::table::StableRowIdentity>,
-    pending_mark_identity: Option<crate::table::StableRowIdentity>,
+    committed_source: Option<crate::ingest::OpenOptions>,
+    pending_source: Option<PendingSourceResult>,
+    latest_activation_error: Option<String>,
     active_view_transform: Option<crate::table::ViewTransform>,
     committed_filters: Vec<ActiveFilter>,
     committed_sort_keys: Vec<ActiveSortKey>,
@@ -324,20 +389,20 @@ pub struct TableView {
     column_nulls: Vec<Option<NullPlacement>>,
     column_display: Vec<ColumnDisplayMetadata>,
     column_color_rules: Vec<Vec<ConditionalColorRule>>,
-    column_color_metadata: Vec<ColumnColorMetadata>,
+    compiled_column_colors: Vec<Option<CompiledColumnColors>>,
+    color_cache_valid: bool,
+    exact_color_profiles: Option<Vec<crate::table::ColumnReductionProfile>>,
     column_metadata_modified: BTreeSet<usize>,
     sort_keys: Vec<ActiveSortKey>,
     columns: Columns,
     #[cfg(feature = "saved-views")]
-    pending_saved_columns: BTreeMap<String, crate::saved_views::ColumnView>,
+    resident_source_header: Option<Vec<String>>,
     #[cfg(feature = "saved-views")]
-    saved_column_locale: Option<String>,
+    saved_binding: Option<crate::saved_views::binding::SavedViewBinding>,
+    #[cfg(feature = "saved-views")]
+    saved_binding_warnings: Vec<crate::saved_views::SavedViewWarning>,
     #[cfg(feature = "saved-views")]
     saved_column_widths: Vec<Option<crate::saved_views::ColumnWidth>>,
-    #[cfg(feature = "saved-views")]
-    pending_saved_sorts: Vec<crate::saved_views::SortKey>,
-    #[cfg(feature = "saved-views")]
-    pending_saved_filters: Vec<crate::saved_views::SavedFilter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,7 +459,6 @@ impl TableView {
         let visible_rows = (0..rows.len()).collect();
 
         Self {
-            preview_preparing: false,
             table_definition: None,
             source_store: None,
             incremental_store: None,
@@ -408,13 +472,14 @@ impl TableView {
             }),
             source_result_is_partial: false,
             source_result_warnings: Vec::new(),
+            pending_projection_schema: RefCell::new(None),
             source_query_provenance: None,
             source_query_coordinator: Rc::new(RefCell::new(
                 crate::table::SourceQueryCoordinator::default(),
             )),
-            pending_source_query: None,
-            pending_cursor_identity: None,
-            pending_mark_identity: None,
+            committed_source: None,
+            pending_source: None,
+            latest_activation_error: None,
             active_view_transform: None,
             committed_filters: Vec::new(),
             committed_sort_keys: Vec::new(),
@@ -444,20 +509,20 @@ impl TableView {
             column_nulls: vec![None; columns.len()],
             column_display: vec![ColumnDisplayMetadata::default(); columns.len()],
             column_color_rules: vec![Vec::new(); columns.len()],
-            column_color_metadata: vec![ColumnColorMetadata::default(); columns.len()],
+            compiled_column_colors: vec![None; columns.len()],
+            color_cache_valid: true,
+            exact_color_profiles: None,
             column_metadata_modified: BTreeSet::new(),
             sort_keys: Vec::new(),
             columns,
             #[cfg(feature = "saved-views")]
-            pending_saved_columns: BTreeMap::new(),
+            resident_source_header: None,
             #[cfg(feature = "saved-views")]
-            saved_column_locale: None,
+            saved_binding: None,
+            #[cfg(feature = "saved-views")]
+            saved_binding_warnings: Vec::new(),
             #[cfg(feature = "saved-views")]
             saved_column_widths: vec![None; column_count],
-            #[cfg(feature = "saved-views")]
-            pending_saved_sorts: Vec::new(),
-            #[cfg(feature = "saved-views")]
-            pending_saved_filters: Vec::new(),
         }
     }
 
@@ -503,7 +568,6 @@ impl TableView {
         let column_count = columns.len();
         let visible_rows = (0..rows.len()).collect();
         Ok(Self {
-            preview_preparing: false,
             table_definition: Some(opened.definition),
             source_store: None,
             incremental_store: Some(SharedTableStore(Rc::new(RefCell::new(opened.store)))),
@@ -515,13 +579,14 @@ impl TableView {
             source_result_extent,
             source_result_is_partial,
             source_result_warnings,
+            pending_projection_schema: RefCell::new(None),
             source_query_provenance,
             source_query_coordinator: Rc::new(RefCell::new(
                 crate::table::SourceQueryCoordinator::default(),
             )),
-            pending_source_query: None,
-            pending_cursor_identity: None,
-            pending_mark_identity: None,
+            committed_source: None,
+            pending_source: None,
+            latest_activation_error: None,
             active_view_transform: Some(crate::table::ViewTransform {
                 generation,
                 filters: Vec::new(),
@@ -555,20 +620,20 @@ impl TableView {
             column_nulls: vec![None; columns.len()],
             column_display: vec![ColumnDisplayMetadata::default(); columns.len()],
             column_color_rules: vec![Vec::new(); columns.len()],
-            column_color_metadata: vec![ColumnColorMetadata::default(); columns.len()],
+            compiled_column_colors: vec![None; columns.len()],
+            color_cache_valid: true,
+            exact_color_profiles: None,
             column_metadata_modified: BTreeSet::new(),
             sort_keys: Vec::new(),
             columns,
             #[cfg(feature = "saved-views")]
-            pending_saved_columns: BTreeMap::new(),
+            resident_source_header: None,
             #[cfg(feature = "saved-views")]
-            saved_column_locale: None,
+            saved_binding: None,
+            #[cfg(feature = "saved-views")]
+            saved_binding_warnings: Vec::new(),
             #[cfg(feature = "saved-views")]
             saved_column_widths: vec![None; column_count],
-            #[cfg(feature = "saved-views")]
-            pending_saved_sorts: Vec::new(),
-            #[cfg(feature = "saved-views")]
-            pending_saved_filters: Vec::new(),
         })
     }
 
@@ -580,6 +645,134 @@ impl TableView {
 
     pub fn table_definition(&self) -> Option<&TableDefinition> {
         self.table_definition.as_ref()
+    }
+    /// Snapshot only presentation and local operation facts. Source indexing
+    /// may advance through the attached store, but the live viewer, cursor,
+    /// viewport, and store attachment remain untouched even on failure.
+    pub(crate) fn prepare_projection(
+        &self,
+        requirements: crate::output::OutputRequirements,
+        theme: &ResolvedTheme,
+    ) -> anyhow::Result<crate::projection::FrozenProjection> {
+        let mut definition = self
+            .table_definition
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("live output has no activated source definition"))?
+            .clone();
+        if let Some((generation, replay)) = self.pending_projection_schema.borrow().as_ref() {
+            if *generation == definition.generation {
+                definition.apply_delta(replay.clone())?;
+            }
+        }
+        let shared = self
+            .incremental_store
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("live output has no attached source store"))?;
+        let mut settings = crate::projection::ProjectionSettings::new(
+            self.column_width_mode,
+            #[cfg(feature = "saved-views")]
+            None,
+            #[cfg(feature = "saved-views")]
+            true,
+            &definition,
+        );
+        settings.gap = self.column_gap;
+        settings.hidden = self.hidden_columns.clone();
+        settings.filters = self.filters.clone();
+        settings.sorts = self.sort_keys.clone();
+        settings.numeric_requested = settings
+            .filters
+            .iter()
+            .any(|filter| filter.kind == FilterKind::Numeric);
+        settings.sort_requested = !settings.sorts.is_empty();
+        settings
+            .display
+            .extend(self.column_display.iter().copied().enumerate());
+        settings.formatted_filter_profile_requested = settings
+            .filters
+            .iter()
+            .any(|filter| filter.kind != FilterKind::Numeric)
+            && settings.display.values().any(|metadata| {
+                matches!(
+                    metadata.format,
+                    DisplayFormatMetadata::Locale | DisplayFormatMetadata::Mask,
+                )
+            });
+        settings.numeric_requested |= settings.formatted_filter_profile_requested;
+        settings.colors.extend(
+            self.column_color_rules
+                .iter()
+                .enumerate()
+                .filter(|(_, rules)| !rules.is_empty())
+                .map(|(column, rules)| (column, rules.clone())),
+        );
+        settings.labels.extend(
+            self.column_label_overrides
+                .iter()
+                .enumerate()
+                .filter_map(|(column, label)| label.clone().map(|label| (column, label))),
+        );
+        settings.alignment.extend(
+            self.column_alignment_overrides
+                .iter()
+                .enumerate()
+                .filter_map(|(column, alignment)| alignment.map(|alignment| (column, alignment))),
+        );
+        settings
+            .fixed_widths
+            .extend(self.column_width_modified.iter().filter_map(|&column| {
+                #[cfg(feature = "saved-views")]
+                if self
+                    .saved_column_widths
+                    .get(column)
+                    .is_some_and(Option::is_some)
+                {
+                    return None;
+                }
+                self.column_widths
+                    .get(column)
+                    .copied()
+                    .map(|width| (column, width))
+            }));
+        #[cfg(feature = "saved-views")]
+        {
+            settings.binding = self.saved_binding.clone();
+            settings.numeric_requested |= settings
+                .binding
+                .as_ref()
+                .is_some_and(|binding| binding.has_pending_numeric_filters());
+            settings.saved_widths.extend(
+                self.saved_column_widths
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(column, width)| width.map(|width| (column, width))),
+            );
+        }
+        let mut delta = crate::table::SchemaDelta::default();
+        let prepared = crate::projection::prepare(
+            crate::projection::SourceInput {
+                store: &mut **shared.0.borrow_mut(),
+                definition: definition.clone(),
+                partial: self.source_result_is_partial,
+                replay_schema: Some(&mut delta),
+            },
+            settings,
+            crate::projection::ProjectionPolicy::Complete,
+            requirements,
+            theme,
+        );
+        if !delta.is_empty() {
+            let mut pending = self.pending_projection_schema.borrow_mut();
+            match pending.as_mut() {
+                Some((generation, replay)) if *generation == definition.generation => {
+                    replay.added_columns.extend(delta.added_columns);
+                    replay.widened_types.extend(delta.widened_types);
+                    replay.completed |= delta.completed;
+                }
+                _ => *pending = Some((definition.generation, delta)),
+            }
+        }
+        prepared
     }
 
     pub fn active_source_query(&self) -> Option<&crate::table::SourceQuery> {
@@ -597,10 +790,29 @@ impl TableView {
             .iter()
             .position(|column| column.id == id)?;
         definition.canonical_column_key(index).or_else(|| {
-            self.header
-                .as_ref()
-                .and_then(|header| header.get(index))
-                .cloned()
+            match &definition.columns[index].source_identity {
+                crate::table::ColumnSourceIdentity::Delimited {
+                    name: Some(name), ..
+                } => (definition
+                    .columns
+                    .iter()
+                    .filter(|column| {
+                        matches!(&column.source_identity,
+                            crate::table::ColumnSourceIdentity::Delimited { name: Some(other), .. }
+                            if other == name)
+                    })
+                    .count()
+                    == 1)
+                    .then(|| name.clone()),
+                crate::table::ColumnSourceIdentity::Delimited {
+                    ordinal,
+                    name: None,
+                }
+                | crate::table::ColumnSourceIdentity::Positional(ordinal) => {
+                    Some(format!("column_{}", ordinal + 1))
+                }
+                _ => None,
+            }
         })
     }
 
@@ -614,6 +826,11 @@ impl TableView {
     }
 
     pub fn clear_view_operations(&mut self) {
+        #[cfg(feature = "saved-views")]
+        if let Some(binding) = self.saved_binding.as_mut() {
+            binding.supersede_sorts();
+            binding.supersede_all_filters();
+        }
         self.filters.clear();
         self.sort_keys.clear();
         self.apply_query_configuration();
@@ -697,7 +914,75 @@ impl TableView {
         }
     }
 
-    pub fn request_source_query(&mut self, query: crate::table::SourceQuery) -> bool {
+    /// Transfer validated opening settings only after the initial result and view bind.
+    pub fn initialize_source_configuration(
+        &mut self,
+        options: crate::ingest::OpenOptions,
+    ) -> anyhow::Result<()> {
+        let committed = self.resolve_source_configuration(options)?;
+        self.committed_source = Some(committed);
+        Ok(())
+    }
+
+    pub fn committed_open_options(&self) -> Option<&crate::ingest::OpenOptions> {
+        self.committed_source.as_ref()
+    }
+
+    fn resolve_source_configuration(
+        &self,
+        mut options: crate::ingest::OpenOptions,
+    ) -> anyhow::Result<crate::ingest::OpenOptions> {
+        if let Some(query) = self.active_source_query.as_ref() {
+            options.limit = (query.limit != std::num::NonZeroUsize::MAX).then_some(query.limit);
+            options.source_filters = query
+                .filters
+                .iter()
+                .map(|filter| {
+                    let column = match filter.scope {
+                        crate::table::SourceFilterScope::WholeRecord => "*".to_owned(),
+                        crate::table::SourceFilterScope::Column(id) => {
+                            self.source_column_name_for_id(id).ok_or_else(|| {
+                                anyhow::anyhow!("source filter column has no durable key")
+                            })?
+                        }
+                    };
+                    Ok(crate::ingest::SourceFilterRequest {
+                        column,
+                        operator: filter.operator,
+                        operand: filter.operand.clone(),
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            options.source_sort = query
+                .order_by
+                .iter()
+                .map(|sort| {
+                    Ok(crate::ingest::SourceSortRequest {
+                        column: self.source_column_name_for_id(sort.column).ok_or_else(|| {
+                            anyhow::anyhow!("source sort column has no durable key")
+                        })?,
+                        direction: sort.direction,
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if options.native_query.is_none()
+                && options.table.is_none()
+                && self.source_query_provenance.is_some()
+            {
+                options.table = self
+                    .table_definition
+                    .as_ref()
+                    .map(|definition| definition.relation.name.clone());
+            }
+        }
+        Ok(options)
+    }
+
+    pub fn request_source_query(
+        &mut self,
+        query: crate::table::SourceQuery,
+        native_query_changed: bool,
+    ) -> bool {
         let Some(definition) = self.table_definition.as_ref() else {
             self.source_status = Some("Source queries require a store-backed table".to_owned());
             return false;
@@ -706,8 +991,6 @@ impl TableView {
             self.source_status = Some(format!("Source query validation failed: {error}"));
             return false;
         }
-        let cursor_identity = self.current_stable_row_identity();
-        let mark_identity = self.mark_stable_row_identity();
         let Some(source) = self.incremental_store.as_ref() else {
             self.source_status = Some("Source query replacement is unavailable".to_owned());
             return false;
@@ -719,10 +1002,29 @@ impl TableView {
                 return false;
             }
         };
+        let (cursor_identity, mark_identity) = match (
+            self.current_stable_row_identity(),
+            self.mark_stable_row_identity(),
+        ) {
+            (Ok(cursor), Ok(mark)) => (cursor, mark),
+            (Err(error), _) | (_, Err(error)) => {
+                self.source_status = Some(format!("Source identity read failed: {error}"));
+                return false;
+            }
+        };
+        let mut options = self.committed_source.clone().unwrap_or_default();
+        if native_query_changed {
+            options.native_query = query.native_query.clone();
+            options.table = None;
+        }
         let revision = self.source_query_coordinator.borrow_mut().request(task);
-        self.pending_source_query = Some(query);
-        self.pending_cursor_identity = cursor_identity;
-        self.pending_mark_identity = mark_identity;
+        self.pending_source = Some(PendingSourceResult {
+            revision,
+            options,
+            cursor_identity,
+            mark_identity,
+        });
+        self.latest_activation_error = None;
         self.source_status = Some(format!("Source query revision {revision} is running"));
         true
     }
@@ -735,34 +1037,51 @@ impl TableView {
         let event = self.source_query_coordinator.borrow_mut().poll();
         match event {
             Some(crate::table::SourceQueryCoordinatorEvent::Ready { revision, result }) => {
-                let Some(query) = self.pending_source_query.take() else {
+                let Some(pending) = self
+                    .pending_source
+                    .take()
+                    .filter(|pending| pending.revision == revision)
+                else {
                     return false;
                 };
-                let cursor_identity = self.pending_cursor_identity.take();
-                let mark_identity = self.pending_mark_identity.take();
-                let applied = self.activate_source_replacement(
-                    query,
+                match self.activate_source_replacement(
                     *result,
-                    cursor_identity,
-                    mark_identity,
-                );
-                if applied {
-                    self.source_status =
-                        Some(format!("Source query revision {revision} completed"));
+                    pending.options,
+                    pending.cursor_identity,
+                    pending.mark_identity,
+                    revision,
+                ) {
+                    Ok(()) => {
+                        self.source_status =
+                            Some(format!("Source query revision {revision} completed"));
+                        true
+                    }
+                    Err(error) => {
+                        self.record_activation_failure(error.to_string());
+                        false
+                    }
                 }
-                applied
             }
-            Some(crate::table::SourceQueryCoordinatorEvent::Failed { error, .. }) => {
-                self.pending_source_query = None;
-                self.pending_cursor_identity = None;
-                self.pending_mark_identity = None;
-                self.source_status = Some(format!(
-                    "Source query failed; prior result retained: {error}"
-                ));
+            Some(crate::table::SourceQueryCoordinatorEvent::Failed { revision, error }) => {
+                if self
+                    .pending_source
+                    .as_ref()
+                    .is_some_and(|pending| pending.revision == revision)
+                {
+                    self.pending_source = None;
+                    self.record_activation_failure(error);
+                }
                 false
             }
             None => false,
         }
+    }
+
+    fn record_activation_failure(&mut self, error: String) {
+        self.source_status = Some(format!(
+            "Source query failed; prior result retained: {error}"
+        ));
+        self.latest_activation_error = Some(error);
     }
 
     pub fn await_latest_source_query(&mut self) -> anyhow::Result<()> {
@@ -772,57 +1091,50 @@ impl TableView {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
-        if let crate::table::SourceQueryProgress::Failed { error, .. } =
-            self.source_query_coordinator.borrow().progress()
-        {
-            anyhow::bail!("latest source query failed: {error}");
+        if let Some(error) = &self.latest_activation_error {
+            anyhow::bail!("latest source activation failed: {error}");
         }
         Ok(())
     }
 
-    pub fn replace_source_query(&mut self, query: crate::table::SourceQuery) -> bool {
-        let Some(definition) = self.table_definition.clone() else {
-            self.source_status = Some("Source queries require a store-backed table".to_owned());
-            return false;
-        };
-        if let Err(error) = crate::table::validate_source_query(&definition, &query) {
-            self.source_status = Some(format!("Source query validation failed: {error}"));
-            return false;
+    pub fn reload_committed_source(
+        &mut self,
+        source: &crate::ingest::source::InputSource,
+    ) -> anyhow::Result<()> {
+        if source.is_stdin() {
+            return Ok(());
         }
-        let cursor_identity = self.current_stable_row_identity();
-        let mark_identity = self.mark_stable_row_identity();
-        let Some(source) = self.incremental_store.clone() else {
-            self.source_status = Some("Source query replacement is unavailable".to_owned());
-            return false;
-        };
-        let execution = source.0.borrow_mut().execute_source_query(&query);
-        let replacement = match execution {
-            Ok(
-                crate::table::SourceQueryExecution::SourceExecuted(store)
-                | crate::table::SourceQueryExecution::BoundedLocal(store),
-            ) => store,
-            Ok(crate::table::SourceQueryExecution::Unsupported { reason }) => {
-                self.source_status = Some(format!("Source query unsupported: {reason}"));
-                return false;
-            }
-            Err(error) => {
-                self.source_status = Some(format!(
-                    "Source query failed; prior result retained: {error}"
-                ));
-                return false;
-            }
-        };
-        self.activate_source_replacement(query, replacement, cursor_identity, mark_identity)
+        let options = self
+            .committed_source
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("source configuration is not committed"))?;
+        let revision = self.source_query_coordinator.borrow_mut().supersede();
+        self.pending_source = None;
+        let cursor_row = self.cursor.row;
+        let result = (|| {
+            let opened =
+                crate::ingest::open_source(source.clone(), &options)?.into_implicit_table()?;
+            self.activate_opened_candidate(
+                opened,
+                options,
+                CandidateRestoration::Reload { cursor_row },
+                revision,
+            )
+        })();
+        if let Err(error) = &result {
+            self.record_activation_failure(error.to_string());
+        }
+        result
     }
 
     fn activate_source_replacement(
         &mut self,
-        _query: crate::table::SourceQuery,
         replacement: crate::table::SourceResult,
+        options: crate::ingest::OpenOptions,
         cursor_identity: Option<crate::table::StableRowIdentity>,
         mark_identity: Option<crate::table::StableRowIdentity>,
-    ) -> bool {
-        let viewport = self.viewport;
+        revision: u64,
+    ) -> anyhow::Result<()> {
         let opened = crate::ingest::OpenedTable {
             generation: replacement.definition.generation,
             definition: replacement.definition,
@@ -830,19 +1142,82 @@ impl TableView {
             object_mode: self.object_mode,
             warnings: replacement.metadata.warnings,
         };
-        let mut next = match Self::from_opened_table(opened, viewport) {
-            Ok(next) => next,
-            Err(error) => {
-                self.source_status = Some(format!(
-                    "Source query loading failed; prior result retained: {error}"
-                ));
-                return false;
+        self.activate_opened_candidate(
+            opened,
+            options,
+            CandidateRestoration::Stable {
+                cursor_identity,
+                mark_identity,
+            },
+            revision,
+        )
+    }
+
+    fn activate_opened_candidate(
+        &mut self,
+        opened: crate::ingest::OpenedTable,
+        options: crate::ingest::OpenOptions,
+        restoration: CandidateRestoration,
+        revision: u64,
+    ) -> anyhow::Result<()> {
+        let mut next = Self::from_opened_table(opened, self.viewport)?;
+        next.restore_view_settings_from(self)?;
+        if matches!(restoration, CandidateRestoration::Stable { .. }) {
+            if let (Some((_, old_column)), Some(old_definition), Some(new_definition)) = (
+                self.mark_identity,
+                self.table_definition.as_ref(),
+                next.table_definition.as_ref(),
+            ) {
+                if let Some(old) = old_definition
+                    .columns
+                    .iter()
+                    .find(|column| column.id == old_column)
+                {
+                    let matches = new_definition
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, candidate)| compatible_source_column(old, candidate))
+                        .collect::<Vec<_>>();
+                    if matches.len() == 1
+                        && old_definition
+                            .columns
+                            .iter()
+                            .filter(|candidate| compatible_source_column(candidate, matches[0].1))
+                            .count()
+                            == 1
+                    {
+                        let (source_column, new_column) = matches[0];
+                        if let Some(visible_column) = next.visible_column_for_source(source_column)
+                        {
+                            next.mark_identity =
+                                next.row_ids.first().map(|id| (*id, new_column.id));
+                            next.mark = next.mark_identity.map(|_| Position {
+                                row: 0,
+                                column: visible_column,
+                            });
+                        }
+                    }
+                }
             }
-        };
-        next.restore_view_settings_from(self);
-        next.restore_stable_identities(cursor_identity, mark_identity);
+        }
+        match restoration {
+            CandidateRestoration::Stable {
+                cursor_identity,
+                mark_identity,
+            } => next.restore_stable_identities(cursor_identity, mark_identity)?,
+            CandidateRestoration::Reload { cursor_row } => {
+                next.goto(cursor_row, next.cursor.column);
+            }
+        }
+        next.committed_source = Some(next.resolve_source_configuration(options)?);
+        if self.source_query_coordinator.borrow().latest_revision() != revision {
+            anyhow::bail!("source replacement was superseded during preparation");
+        }
+        next.source_query_coordinator = self.source_query_coordinator.clone();
+        next.latest_activation_error = None;
         *self = next;
-        true
+        Ok(())
     }
 
     pub fn object_mode_resolution(&self) -> Option<crate::ingest::ObjectModeResolution> {
@@ -973,6 +1348,9 @@ impl TableView {
             let mut cells = source_row.display_cells();
             cells.resize(self.source_column_count(), String::new());
             self.rows.push(cells);
+        }
+        if self.rows.len() != previous_len {
+            self.refresh_resident_color_facts_on_append();
         }
         self.visible_rows.extend(previous_len..self.rows.len());
         if self.rows.len().saturating_sub(previous_len) >= 256 {
@@ -1169,28 +1547,22 @@ impl TableView {
         &mut self,
         delta: crate::table::SchemaDelta,
     ) -> anyhow::Result<()> {
+        let pending = self.pending_projection_schema.borrow_mut().take();
+        if let Some((generation, replay)) = pending {
+            if self.source_generation() == Some(generation) {
+                self.apply_source_schema_delta(replay)?;
+            }
+        }
         if delta.is_empty() {
             #[cfg(feature = "saved-views")]
             if delta.completed {
-                if !self.pending_saved_columns.is_empty() {
-                    self.source_status = Some(format!(
-                        "Saved view columns not found: {}",
-                        self.pending_saved_columns
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    self.pending_saved_columns.clear();
-                }
-                self.apply_pending_saved_operations(true);
+                self.advance_saved_binding(false);
+                self.advance_saved_binding(true);
             }
             return Ok(());
         }
         #[cfg(feature = "saved-views")]
         let completed = delta.completed;
-        #[cfg(feature = "saved-views")]
-        let old_count = self.source_column_count();
         let Some(definition) = self.table_definition.as_mut() else {
             return Ok(());
         };
@@ -1203,6 +1575,13 @@ impl TableView {
                 .map(|column| column.display_name.clone())
                 .collect(),
         );
+        if let Some(header) = self.header.as_mut() {
+            for (index, override_label) in self.column_label_overrides.iter().enumerate() {
+                if let (Some(label), Some(name)) = (override_label, header.get_mut(index)) {
+                    name.clone_from(label);
+                }
+            }
+        }
         for row in &mut self.rows {
             row.resize(new_count, String::new());
         }
@@ -1212,49 +1591,18 @@ impl TableView {
         self.column_display
             .resize(new_count, ColumnDisplayMetadata::default());
         self.column_color_rules.resize(new_count, Vec::new());
-        self.column_color_metadata
-            .resize(new_count, ColumnColorMetadata::default());
+        self.compiled_column_colors.resize(new_count, None);
+        self.invalidate_color_source_facts();
         #[cfg(feature = "saved-views")]
         self.saved_column_widths.resize(new_count, None);
         self.columns = Columns::infer(self.header.as_deref(), &self.rows);
         self.computed_column_widths_cache.clear();
         #[cfg(feature = "saved-views")]
         {
-            let mut resolved = crate::saved_views::ResolvedColumns {
-                columns: vec![None; new_count],
-                pending: BTreeMap::new(),
-                warnings: Vec::new(),
-            };
-            for index in old_count..new_count {
-                let key = self
-                    .table_definition
-                    .as_ref()
-                    .and_then(|definition| definition.canonical_column_key(index));
-                let Some(key) = key else { continue };
-                if let Some(column_view) = self.pending_saved_columns.remove(&key) {
-                    resolved.columns[index] = Some(crate::saved_views::ResolvedColumnView {
-                        column_index: index,
-                        source_key: key,
-                        view: column_view,
-                    });
-                }
+            self.advance_saved_binding(false);
+            if completed {
+                self.advance_saved_binding(true);
             }
-            if resolved.columns.iter().any(Option::is_some) {
-                let locale = self.saved_column_locale.clone();
-                self.apply_saved_columns(&resolved, locale.as_deref());
-            }
-            if completed && !self.pending_saved_columns.is_empty() {
-                self.source_status = Some(format!(
-                    "Saved view columns not found: {}",
-                    self.pending_saved_columns
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                self.pending_saved_columns.clear();
-            }
-            self.apply_pending_saved_operations(completed);
         }
         Ok(())
     }
@@ -1451,7 +1799,7 @@ impl TableView {
         visible_column: usize,
         rendered: &str,
         query: Option<&CaseInsensitiveQuery<'_>>,
-    ) -> VisibleCellStyleContext<'_> {
+    ) -> VisibleCellStyleContext {
         let Some(source_column) = self.source_column_for_visible(visible_column) else {
             return VisibleCellStyleContext {
                 conditional_color: None,
@@ -1467,7 +1815,7 @@ impl TableView {
         source_column: usize,
         rendered: &str,
         query: Option<&CaseInsensitiveQuery<'_>>,
-    ) -> VisibleCellStyleContext<'_> {
+    ) -> VisibleCellStyleContext {
         let Some(source_row) = self.source_row_for_visible_row(row) else {
             return VisibleCellStyleContext {
                 conditional_color: None,
@@ -1480,7 +1828,11 @@ impl TableView {
             .and_then(|row| row.get(source_column).map(String::as_str))
             .unwrap_or_default();
         VisibleCellStyleContext {
-            conditional_color: self.conditional_color_for_source_cell(source_column, raw, rendered),
+            conditional_color: self.conditional_foreground_for_source_cell(
+                source_column,
+                raw,
+                rendered,
+            ),
             search_match: self.search_matches_cell(raw, rendered, query),
         }
     }
@@ -1501,75 +1853,16 @@ impl TableView {
         }
     }
 
-    pub fn output_conditional_color(&self, row: usize, visible_column: usize) -> Option<String> {
-        let source_column = self.source_column_for_visible(visible_column)?;
-        let source_row = self.source_row_for_visible_row(row)?;
-        let raw = self
-            .rows
-            .get(source_row)
-            .and_then(|row| row.get(source_column).map(String::as_str))
-            .unwrap_or_default();
-        let rendered = self.render_source_cell(source_column, Some(raw));
-        self.conditional_color_for_source_cell(source_column, raw, &rendered)
-            .map(Cow::into_owned)
-    }
-
-    #[cfg(all(test, feature = "saved-views"))]
-    fn conditional_color_for_visible_cell(
+    fn conditional_foreground_for_source_cell(
         &self,
-        row: usize,
-        visible_column: usize,
-    ) -> Option<String> {
-        self.output_conditional_color(row, visible_column)
-    }
-
-    fn conditional_color_for_source_cell<'a>(
-        &'a self,
         source_column: usize,
         raw: &str,
         rendered: &str,
-    ) -> Option<Cow<'a, str>> {
-        let rules = self.column_color_rules.get(source_column)?;
-        if rules.is_empty() {
-            return None;
-        }
-        let metadata = self.column_color_metadata.get(source_column);
-        let min_max = metadata.and_then(|metadata| metadata.numeric_min_max);
-        let mut numeric = None;
-
-        rules
-            .iter()
-            .enumerate()
-            .find_map(|(rule_idx, rule)| match rule {
-                ConditionalColorRule::Identifiers { .. } => metadata
-                    .and_then(|metadata| metadata.identifier_color_refs.get(&rule_idx))
-                    .and_then(|color_refs| color_refs.get(rendered))
-                    .map(|color_ref| Cow::Borrowed(color_ref.as_str())),
-                ConditionalColorRule::AutoGradient { colors, steps } => {
-                    let numeric = *numeric.get_or_insert_with(|| {
-                        parse_numeric_scalar(raw, self.source_numeric_column_profile(source_column))
-                    });
-                    let value = numeric?;
-                    let (min, max) = min_max?;
-                    if colors.is_empty() || max <= min {
-                        return colors.first().map(|color| Cow::Borrowed(color.as_str()));
-                    }
-                    let steps = (*steps).max(1);
-                    let ratio = ((value - min) / (max - min)).clamp(0.0, 1.0);
-                    let bucket = (ratio * steps as f64).floor().min((steps - 1) as f64) as usize;
-                    metadata
-                        .and_then(|metadata| metadata.gradient_color_refs.get(&rule_idx))
-                        .and_then(|color_refs| color_refs.get(bucket))
-                        .map(|color_ref| Cow::Borrowed(color_ref.as_str()))
-                        .or_else(|| Some(Cow::Owned(gradient_color_ref(colors, bucket, steps))))
-                }
-                _ => {
-                    let numeric = *numeric.get_or_insert_with(|| {
-                        parse_numeric_scalar(raw, self.source_numeric_column_profile(source_column))
-                    });
-                    rule.color_ref_for(raw, rendered, numeric, min_max)
-                }
-            })
+    ) -> Option<ratatui::style::Color> {
+        self.compiled_column_colors
+            .get(source_column)
+            .and_then(Option::as_ref)
+            .and_then(|compiled| compiled.evaluate(raw, rendered))
     }
 
     pub fn visible_row(&self, row: usize) -> Option<&Vec<String>> {
@@ -1606,22 +1899,6 @@ impl TableView {
     fn source_numeric_column_profile(&self, source_column: usize) -> NumericColumnProfile {
         self.columns
             .numeric_profile(ColumnIndex::new(source_column))
-    }
-
-    fn reparse_numeric_filters(&mut self, rows: &[Vec<String>]) {
-        let columns = Columns::infer(self.header.as_deref(), rows);
-        for filter in &mut self.filters {
-            if filter.kind != FilterKind::Numeric {
-                continue;
-            }
-            if let Ok(condition) = FilterCondition::parse(
-                FilterKind::Numeric,
-                &filter.input,
-                columns.numeric_profile(ColumnIndex::new(filter.column)),
-            ) {
-                filter.condition = condition;
-            }
-        }
     }
 
     pub(crate) fn filter_kind_enabled(&self, column: usize, kind: FilterKind) -> bool {
@@ -1817,13 +2094,33 @@ impl TableView {
 
     #[cfg(feature = "saved-views")]
     pub fn type_sort_mode_for_source(&self, source_column: usize) -> SortMode {
-        self.sort_mode_for_source(source_column, SortMode::Lexical)
+        let metadata = self
+            .column_display
+            .get(source_column)
+            .copied()
+            .unwrap_or_default();
+        let source_type = self
+            .table_definition
+            .as_ref()
+            .and_then(|definition| definition.columns.get(source_column))
+            .map_or(crate::table::LogicalType::Unknown, |column| {
+                column.source_type
+            });
+        render::type_sort_mode(
+            metadata,
+            source_type,
+            self.columns.is_numeric(ColumnIndex::new(source_column)),
+        )
     }
 
     pub fn sort_current_column(&mut self, mode: SortMode, direction: SortDirection) {
         let Some(column) = self.source_column_for_visible(self.cursor.column) else {
             return;
         };
+        #[cfg(feature = "saved-views")]
+        if let Some(binding) = self.saved_binding.as_mut() {
+            binding.supersede_sorts();
+        }
         let mode = self.sort_mode_for_source(column, mode);
         self.activate_sort_key(column, mode, direction);
         self.computed_column_widths_cache.clear();
@@ -1835,6 +2132,10 @@ impl TableView {
         let Some(column) = self.source_column_for_visible(self.cursor.column) else {
             return;
         };
+        #[cfg(feature = "saved-views")]
+        if let Some(binding) = self.saved_binding.as_mut() {
+            binding.supersede_sorts();
+        }
         self.sort_keys.retain(|key| key.column != column);
         self.computed_column_widths_cache.clear();
         self.apply_query_configuration();
@@ -1870,11 +2171,11 @@ impl TableView {
     }
 
     fn apply_query_configuration(&mut self) -> bool {
-        if self.preview_preparing {
-            return true;
-        }
         match self.refresh_view_transform() {
-            QueryRefresh::Applied => return true,
+            QueryRefresh::Applied => {
+                self.invalidate_color_source_facts();
+                return true;
+            }
             QueryRefresh::Failed => {
                 self.filters = self.committed_filters.clone();
                 self.sort_keys = self.committed_sort_keys.clone();
@@ -2056,7 +2357,20 @@ impl TableView {
                     .copied()
                     .unwrap_or_default()
             },
-            &|_, value| value.display().into_owned(),
+            &|column, value| {
+                let index = column.ordinal as usize;
+                let metadata = self.column_display.get(index).copied().unwrap_or_default();
+                let raw = value.display();
+                if metadata.format == DisplayFormatMetadata::Plain {
+                    raw.into_owned()
+                } else {
+                    render::cell(
+                        metadata,
+                        numeric_profiles.get(index).copied().unwrap_or_default(),
+                        &raw,
+                    )
+                }
+            },
         ) {
             Ok(result) => result,
             Err(error) => {
@@ -2092,104 +2406,119 @@ impl TableView {
         self.cursor.row = self.cursor.row.min(self.rows.len().saturating_sub(1));
     }
 
-    fn current_stable_row_identity(&mut self) -> Option<crate::table::StableRowIdentity> {
-        let source_index = self
+    fn current_stable_row_identity(
+        &mut self,
+    ) -> anyhow::Result<Option<crate::table::StableRowIdentity>> {
+        let Some(index) = self
             .visible_rows
             .get(self.cursor.row)
             .and_then(|row| self.row_ids.get(*row))
-            .map(|id| id.ordinal as usize)?;
-        self.incremental_store
-            .as_ref()?
-            .0
-            .borrow_mut()
-            .stable_row_identity(RowIndex(source_index))
-            .ok()
-            .flatten()
+            .map(|id| id.ordinal as usize)
+        else {
+            return Ok(None);
+        };
+        match &self.incremental_store {
+            Some(store) => store.0.borrow_mut().stable_row_identity(RowIndex(index)),
+            None => Ok(None),
+        }
     }
 
-    fn mark_stable_row_identity(&mut self) -> Option<crate::table::StableRowIdentity> {
-        let source_index = self.mark_identity?.0.ordinal as usize;
-        self.incremental_store
-            .as_ref()?
-            .0
-            .borrow_mut()
-            .stable_row_identity(RowIndex(source_index))
-            .ok()
-            .flatten()
+    fn mark_stable_row_identity(
+        &mut self,
+    ) -> anyhow::Result<Option<crate::table::StableRowIdentity>> {
+        let Some(index) = self.mark_identity.map(|(id, _)| id.ordinal as usize) else {
+            return Ok(None);
+        };
+        match &self.incremental_store {
+            Some(store) => store.0.borrow_mut().stable_row_identity(RowIndex(index)),
+            None => Ok(None),
+        }
     }
 
     fn restore_stable_identities(
         &mut self,
         cursor_identity: Option<crate::table::StableRowIdentity>,
         mark_identity: Option<crate::table::StableRowIdentity>,
-    ) {
-        if !self.view_transform_is_active()
-            && (cursor_identity.is_some() || mark_identity.is_some())
-        {
-            let mut cursor_found = false;
-            let mut mark_found = false;
-            if let Some(store) = &self.incremental_store {
-                let mut store = store.0.borrow_mut();
-                let mut index = self.row_ids.len();
-                loop {
-                    let source_row = match store.row(RowIndex(index)) {
-                        Ok(Some(row)) => row,
-                        Ok(None) | Err(_) => break,
+    ) -> anyhow::Result<()> {
+        if cursor_identity.is_none() && mark_identity.is_none() {
+            self.cursor.row = 0;
+            self.mark = None;
+            self.mark_identity = None;
+            return Ok(());
+        }
+        let mut cursor_match = None;
+        let mut mark_match = None;
+        let mut cursor_count = 0;
+        let mut mark_count = 0;
+        let transformed = self.view_transform_is_active();
+        let previous_len = self.rows.len();
+        let visible_positions = transformed.then(|| {
+            self.row_ids
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(position, id)| (id, position))
+                .collect::<std::collections::HashMap<_, _>>()
+        });
+        if let Some(store) = &self.incremental_store {
+            let mut store = store.0.borrow_mut();
+            let mut index = 0;
+            loop {
+                let Some(source_row) = store.row(RowIndex(index))? else {
+                    break;
+                };
+                let identity = store.stable_row_identity(RowIndex(index))?;
+                if cursor_identity
+                    .as_ref()
+                    .is_some_and(|wanted| identity.as_ref() == Some(wanted))
+                {
+                    cursor_count += 1;
+                    cursor_match = if transformed {
+                        visible_positions
+                            .as_ref()
+                            .and_then(|positions| positions.get(&source_row.id).copied())
+                    } else {
+                        Some(index)
                     };
-                    let identity = store.stable_row_identity(RowIndex(index)).ok().flatten();
-                    cursor_found |= identity.as_ref() == cursor_identity.as_ref();
-                    mark_found |= identity.as_ref() == mark_identity.as_ref();
+                }
+                if mark_identity
+                    .as_ref()
+                    .is_some_and(|wanted| identity.as_ref() == Some(wanted))
+                {
+                    mark_count += 1;
+                    mark_match = if transformed {
+                        visible_positions
+                            .as_ref()
+                            .and_then(|positions| positions.get(&source_row.id).copied())
+                    } else {
+                        Some(index)
+                    };
+                }
+                if !transformed && index >= self.row_ids.len() {
                     self.row_ids.push(source_row.id);
                     let mut cells = source_row.display_cells();
                     cells.resize(self.source_column_count(), String::new());
                     self.rows.push(cells);
-                    index = index.saturating_add(1);
-                    if cursor_identity.as_ref().is_none_or(|_| cursor_found)
-                        && mark_identity.as_ref().is_none_or(|_| mark_found)
-                    {
-                        break;
-                    }
                 }
+                index += 1;
             }
-            self.visible_rows = (0..self.rows.len()).collect();
+            if !transformed {
+                self.visible_rows = (0..self.rows.len()).collect();
+            }
         }
-        let identities = if let Some(store) = &self.incremental_store {
-            let mut store = store.0.borrow_mut();
-            self.row_ids
-                .iter()
-                .map(|id| {
-                    store
-                        .stable_row_identity(RowIndex(id.ordinal as usize))
-                        .ok()
-                        .flatten()
-                })
-                .collect::<Vec<_>>()
+        if !transformed && self.rows.len() != previous_len {
+            self.refresh_resident_color_facts_on_append();
+        }
+        self.cursor.row = if cursor_count == 1 {
+            cursor_match.unwrap_or(0)
         } else {
-            Vec::new()
+            0
         };
-        if let Some(cursor_identity) = cursor_identity {
-            if let Some(row) = identities
-                .iter()
-                .position(|identity| identity.as_ref() == Some(&cursor_identity))
-            {
-                self.cursor.row = row;
-            } else {
-                self.cursor.row = 0;
-            }
-        } else {
-            self.cursor.row = 0;
-        }
-        if let Some(mark_identity) = mark_identity {
-            if let Some(row) = identities
-                .iter()
-                .position(|identity| identity.as_ref() == Some(&mark_identity))
-            {
-                if let Some((_, column_id)) = self.mark_identity {
-                    let new_row_id = self.row_ids[row];
-                    self.mark_identity = Some((new_row_id, column_id));
-                    if let Some(mark) = &mut self.mark {
-                        mark.row = row;
-                    }
+        if mark_count == 1 {
+            if let (Some(row), Some((_, column_id))) = (mark_match, self.mark_identity) {
+                self.mark_identity = Some((self.row_ids[row], column_id));
+                if let Some(mark) = &mut self.mark {
+                    mark.row = row;
                 }
             } else {
                 self.mark = None;
@@ -2200,6 +2529,7 @@ impl TableView {
             self.mark_identity = None;
         }
         self.keep_cursor_visible();
+        Ok(())
     }
 
     pub fn active_view_transform(&self) -> Option<&crate::table::ViewTransform> {
@@ -2255,6 +2585,17 @@ impl TableView {
             input,
             condition,
         ));
+        #[cfg(feature = "saved-views")]
+        if let Some(binding) = self.saved_binding.as_mut() {
+            binding.supersede_filters_for_column(
+                source_column,
+                self.table_definition.as_ref(),
+                self.resident_source_header
+                    .as_deref()
+                    .or(self.header.as_deref())
+                    .unwrap_or(&[]),
+            );
+        }
         self.computed_column_widths_cache.clear();
         self.apply_query_configuration();
         Ok(())
@@ -2262,6 +2603,17 @@ impl TableView {
 
     pub fn clear_filters_for_column(&mut self, column: usize) {
         if let Some(source_column) = self.source_column_for_visible(column) {
+            #[cfg(feature = "saved-views")]
+            if let Some(binding) = self.saved_binding.as_mut() {
+                binding.supersede_filters_for_column(
+                    source_column,
+                    self.table_definition.as_ref(),
+                    self.resident_source_header
+                        .as_deref()
+                        .or(self.header.as_deref())
+                        .unwrap_or(&[]),
+                );
+            }
             self.filters.retain(|filter| filter.column != source_column);
         }
         self.computed_column_widths_cache.clear();
@@ -2428,347 +2780,6 @@ impl TableView {
             .collect()
     }
 
-    /// Explicit per-column widths for document output. Automatic widths are
-    /// intentionally unspecified and are measured by the selected adapter.
-    pub fn output_column_width_overrides(&self) -> Vec<Option<usize>> {
-        match self.column_width_mode {
-            ColumnWidthMode::Fixed(width) => {
-                vec![Some(width as usize); self.column_count()]
-            }
-            ColumnWidthMode::Mode | ColumnWidthMode::Max => self
-                .visible_source_columns_iter()
-                .map(|source_column| {
-                    self.column_width_modified
-                        .contains(&source_column)
-                        .then(|| self.column_widths.get(source_column).copied())
-                        .flatten()
-                })
-                .collect(),
-        }
-    }
-
-    /// Finish indexing/query execution and load the complete logical result
-    /// without consulting the viewport. This is the preparation boundary used
-    /// by output adapters and by post-interactive serialization.
-    pub(crate) fn defer_preview_preparation(&mut self) {
-        self.preview_preparing = true;
-    }
-
-    pub(crate) fn prepare_preview(
-        &mut self,
-        limit: usize,
-        colored: bool,
-        full_schema: bool,
-    ) -> anyhow::Result<Option<crate::table::RowCount>> {
-        let needs_full_materialization = self
-            .filters
-            .iter()
-            .any(|filter| filter.kind == FilterKind::Numeric);
-        #[cfg(feature = "saved-views")]
-        let needs_full_materialization = needs_full_materialization
-            || self
-                .pending_saved_filters
-                .iter()
-                .any(|filter| matches!(filter.kind, crate::saved_views::FilterKind::Numeric));
-        let has_sort = !self.sort_keys.is_empty();
-        let materialize_before_filtering = has_sort || needs_full_materialization;
-        #[cfg(feature = "saved-views")]
-        let has_sort = has_sort || !self.pending_saved_sorts.is_empty();
-        let remaining;
-        let mut schema_row_ids = Vec::new();
-        if materialize_before_filtering || has_sort {
-            // Discover the full sorting schema before a query store consumes its deltas.
-            if let Some(shared) = self.incremental_store.clone() {
-                let progress = shared
-                    .0
-                    .borrow_mut()
-                    .ensure_indexed_through(RowIndex(usize::MAX))?;
-                self.apply_source_schema_delta(progress.schema_delta)?;
-                if needs_full_materialization {
-                    let base = shared.0.borrow_mut().materialize()?;
-                    let rows = base
-                        .rows()
-                        .iter()
-                        .map(crate::table::Row::display_cells)
-                        .collect::<Vec<_>>();
-                    self.reparse_numeric_filters(&rows);
-                    self.source_store = Some(base);
-                }
-            }
-            self.preview_preparing = false;
-            self.apply_query_configuration();
-            self.complete_for_output_without_refresh(false)?;
-            schema_row_ids = self.row_ids.clone();
-            let total = self.rows.len();
-            self.rows.truncate(limit);
-            self.row_ids.truncate(limit);
-            self.visible_rows = (0..self.rows.len()).collect();
-            remaining = (total > limit).then_some(
-                if !self.source_result_is_partial()
-                    && (has_sort || needs_full_materialization || self.filters.is_empty())
-                {
-                    crate::table::RowCount::Exact(total.saturating_sub(limit))
-                } else {
-                    crate::table::RowCount::Unknown
-                },
-            );
-        } else {
-            let shared = self
-                .incremental_store
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("preview requires a source store"))?;
-            let defer_schema_for_filter = full_schema || !self.filters.is_empty() || {
-                #[cfg(feature = "saved-views")]
-                {
-                    !self.pending_saved_filters.is_empty()
-                }
-                #[cfg(not(feature = "saved-views"))]
-                {
-                    false
-                }
-            };
-            let mut selected: Vec<Vec<String>> = Vec::new();
-            let mut ids = Vec::new();
-            let mut index = 0;
-            let mut more = false;
-            let mut matched_total: usize = 0;
-            let mut prefix_state = None;
-            let mut deferred_until = None;
-            let mut deferred_schema_delta = crate::table::SchemaDelta::default();
-            loop {
-                // Retain the emitted schema while lookahead checks later matching rows.
-                if !full_schema && selected.len() == limit && prefix_state.is_none() {
-                    prefix_state = Some(self.clone());
-                }
-                #[cfg(feature = "saved-views")]
-                let pending_before = !self.pending_saved_filters.is_empty();
-                let progress = shared
-                    .0
-                    .borrow_mut()
-                    .ensure_indexed_through(RowIndex(index))?;
-                let schema_checkpoint = defer_schema_for_filter.then(|| self.clone());
-                let mut schema_delta = std::mem::take(&mut deferred_schema_delta);
-                schema_delta
-                    .added_columns
-                    .extend(progress.schema_delta.added_columns);
-                schema_delta
-                    .widened_types
-                    .extend(progress.schema_delta.widened_types);
-                schema_delta.completed |= progress.schema_delta.completed;
-                self.apply_source_schema_delta(schema_delta.clone())?;
-                #[cfg(feature = "saved-views")]
-                let pending_resolved = pending_before && self.pending_saved_filters.is_empty();
-                #[cfg(not(feature = "saved-views"))]
-                let pending_resolved = false;
-                if pending_resolved {
-                    let deferred_end = deferred_until.take().unwrap_or_default();
-                    for deferred_index in 0..deferred_end {
-                        let Some(row) = shared.0.borrow_mut().row(RowIndex(deferred_index))? else {
-                            break;
-                        };
-                        let row_id = row.id;
-                        let cells = row.display_cells();
-                        if self.row_passes_filters(&cells) {
-                            schema_row_ids.push(row_id);
-                            matched_total += 1;
-                            if selected.len() == limit {
-                                more = true;
-                                if !full_schema {
-                                    break;
-                                }
-                            } else {
-                                ids.push(row_id);
-                                selected.push(cells);
-                            }
-                        }
-                    }
-                    if more && !full_schema {
-                        break;
-                    }
-                }
-                let Some(row) = shared.0.borrow_mut().row(RowIndex(index))? else {
-                    if let Some(checkpoint) = schema_checkpoint {
-                        *self = checkpoint;
-                    }
-                    break;
-                };
-                index += 1;
-                let cells = row.display_cells();
-                #[cfg(feature = "saved-views")]
-                if !self.pending_saved_filters.is_empty() {
-                    deferred_until = Some(index);
-                    continue;
-                }
-                if self.row_passes_filters(&cells) {
-                    deferred_schema_delta = crate::table::SchemaDelta::default();
-                    schema_row_ids.push(row.id);
-                    matched_total += 1;
-                    if selected.len() == limit {
-                        more = true;
-                        if !full_schema {
-                            break;
-                        }
-                    } else {
-                        ids.push(row.id);
-                        selected.push(cells);
-                    }
-                } else if let Some(checkpoint) = schema_checkpoint {
-                    *self = checkpoint;
-                    deferred_schema_delta = schema_delta;
-                }
-            }
-            let count = shared.0.borrow().row_count();
-            remaining = if more {
-                match count {
-                    crate::table::RowCount::Exact(total)
-                        if !self.source_result_is_partial()
-                            && (self.filters.is_empty() || index >= total) =>
-                    {
-                        let remainder = if self.filters.is_empty() {
-                            total.saturating_sub(limit)
-                        } else {
-                            matched_total.saturating_sub(limit)
-                        };
-                        Some(crate::table::RowCount::Exact(remainder))
-                    }
-                    _ => Some(crate::table::RowCount::Unknown),
-                }
-            } else {
-                None
-            };
-            if !full_schema {
-                if let Some(prefix) = prefix_state {
-                    *self = prefix;
-                }
-            }
-            self.rows = selected;
-            self.row_ids = ids;
-        }
-        let source_filter_active = self.incremental_store.as_ref().is_some_and(|shared| {
-            let store = shared.0.borrow();
-            store.has_source_filters()
-                || store
-                    .active_source_query()
-                    .is_some_and(|query| !query.filters.is_empty())
-        });
-        let needs_present_mask = !full_schema || source_filter_active || !self.filters.is_empty();
-        if needs_present_mask {
-            if let Some(shared) = &self.incremental_store {
-                let store = shared.0.borrow_mut();
-                let row_ids = if full_schema && (source_filter_active || !self.filters.is_empty()) {
-                    if schema_row_ids.is_empty() {
-                        self.row_ids.clone()
-                    } else {
-                        schema_row_ids
-                    }
-                } else {
-                    self.row_ids.clone()
-                };
-                if row_ids.is_empty() && !self.filters.is_empty() && !source_filter_active {
-                    self.hidden_columns.extend(0..self.source_column_count());
-                } else if !row_ids.is_empty() {
-                    let present = row_ids
-                        .iter()
-                        .map(|id| store.present_columns(*id))
-                        .collect::<Option<Vec<_>>>();
-                    if let Some(present) = present {
-                        let present = present.into_iter().flatten().collect::<BTreeSet<_>>();
-                        self.hidden_columns.extend(
-                            (0..self.source_column_count())
-                                .filter(|column| !present.contains(column)),
-                        );
-                    }
-                }
-            }
-        }
-        let columns = self.source_column_count();
-        for row in &mut self.rows {
-            row.resize(columns, String::new());
-        }
-        // The output projection must no longer pull rows or profile the source.
-        self.incremental_store = None;
-        self.source_store = None;
-        self.query_store = None;
-        self.active_view_transform = None;
-        self.preview_preparing = false;
-        self.visible_rows = (0..self.rows.len()).collect();
-        self.columns = Columns::infer(self.header.as_deref(), &self.rows);
-        if colored {
-            self.rebuild_column_color_metadata();
-        }
-        #[cfg(feature = "saved-views")]
-        self.resolve_saved_column_widths();
-        Ok(remaining)
-    }
-
-    pub fn complete_for_output(&mut self) -> anyhow::Result<()> {
-        self.complete_for_output_with_color(true)
-    }
-
-    pub(crate) fn complete_for_output_with_color(&mut self, colored: bool) -> anyhow::Result<()> {
-        self.complete_for_output_with_color_and_refresh(colored, true)
-    }
-
-    fn complete_for_output_without_refresh(&mut self, colored: bool) -> anyhow::Result<()> {
-        self.complete_for_output_with_color_and_refresh(colored, false)
-    }
-
-    fn complete_for_output_with_color_and_refresh(
-        &mut self,
-        colored: bool,
-        refresh_transform: bool,
-    ) -> anyhow::Result<()> {
-        if let Some(shared) = self.incremental_store.clone() {
-            let progress = shared
-                .0
-                .borrow_mut()
-                .ensure_indexed_through(RowIndex(usize::MAX))?;
-            self.apply_source_schema_delta(progress.schema_delta)?;
-        }
-
-        if refresh_transform && self.view_transform_is_active() {
-            match self.refresh_view_transform() {
-                QueryRefresh::Applied | QueryRefresh::NotStoreBacked => {}
-                QueryRefresh::Failed => {
-                    anyhow::bail!(
-                        "{}",
-                        self.source_status
-                            .clone()
-                            .unwrap_or_else(|| "query preparation failed".to_owned())
-                    );
-                }
-            }
-        }
-
-        let selected_store = if self.view_transform_is_active() {
-            self.query_store.clone()
-        } else {
-            self.incremental_store.clone()
-        };
-        if let Some(shared) = selected_store {
-            let materialized = shared.0.borrow_mut().materialize()?;
-            self.rows = materialized
-                .rows()
-                .iter()
-                .map(crate::table::Row::display_cells)
-                .collect();
-            self.row_ids = materialized.rows().iter().map(|row| row.id).collect();
-            self.visible_rows = (0..self.rows.len()).collect();
-            if !self.view_transform_is_active() {
-                self.source_store = Some(materialized);
-            }
-        }
-
-        self.columns = Columns::infer(self.header.as_deref(), &self.rows);
-        self.sampled_column_widths.clear();
-        self.computed_column_widths_cache.clear();
-        if colored {
-            self.rebuild_column_color_metadata();
-        }
-        self.keep_cursor_visible();
-        Ok(())
-    }
-
     pub fn column_alignment_override(&self, column: usize) -> Option<ColumnAlignment> {
         let source_column = self.source_column_for_visible(column)?;
         self.column_alignment_overrides
@@ -2886,6 +2897,21 @@ impl TableView {
         let Some(source_column) = self.source_column_for_visible(self.cursor.column) else {
             return;
         };
+        #[cfg(feature = "saved-views")]
+        if let Some(binding) = self.saved_binding.as_mut() {
+            binding.supersede_column(source_column);
+            binding.supersede_sorts();
+            if update.clear_filters {
+                binding.supersede_filters_for_column(
+                    source_column,
+                    self.table_definition.as_ref(),
+                    self.resident_source_header
+                        .as_deref()
+                        .or(self.header.as_deref())
+                        .unwrap_or(&[]),
+                );
+            }
+        }
 
         if update.visible {
             self.hidden_columns.remove(&source_column);
@@ -2898,6 +2924,7 @@ impl TableView {
         }
         if let Some(display) = self.column_display.get_mut(source_column) {
             display.column_type = column_type_metadata_from_choice(update.column_type);
+            display.type_explicit = true;
             display.format = display_format_metadata_from_choice(update.format);
             display.mask = None;
         }
@@ -2909,7 +2936,7 @@ impl TableView {
             };
         }
         self.column_metadata_modified.insert(source_column);
-        self.rebuild_column_color_metadata_for(source_column);
+        self.invalidate_conditional_colors();
 
         if update.clear_filters {
             self.filters.retain(|filter| filter.column != source_column);
@@ -2937,26 +2964,35 @@ impl TableView {
         self.keep_cursor_visible();
     }
 
-    pub fn restore_view_settings_from(&mut self, previous: &TableView) {
+    pub fn restore_view_settings_from(&mut self, previous: &TableView) -> anyhow::Result<()> {
         let source_column_count = self.source_column_count();
         let previous_column_count = previous.source_column_count();
         let remap = (0..previous_column_count)
             .map(|old_index| {
-                let old_identity = previous
-                    .table_definition
-                    .as_ref()
-                    .and_then(|definition| definition.columns.get(old_index))
-                    .map(|column| &column.source_identity);
-                old_identity
-                    .and_then(|identity| {
-                        self.table_definition.as_ref().and_then(|definition| {
-                            definition
-                                .columns
-                                .iter()
-                                .position(|column| &column.source_identity == identity)
-                        })
-                    })
-                    .or_else(|| (old_index < source_column_count).then_some(old_index))
+                match (
+                    previous.table_definition.as_ref(),
+                    self.table_definition.as_ref(),
+                ) {
+                    (Some(old), Some(new)) => {
+                        let old_column = old.columns.get(old_index)?;
+                        let matches = new
+                            .columns
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, column)| compatible_source_column(old_column, column))
+                            .collect::<Vec<_>>();
+                        let (_, candidate) = matches.first().copied()?;
+                        let unique_old = old
+                            .columns
+                            .iter()
+                            .filter(|column| compatible_source_column(column, candidate))
+                            .count()
+                            == 1;
+                        (matches.len() == 1 && unique_old).then_some(matches[0].0)
+                    }
+                    (None, None) => (old_index < source_column_count).then_some(old_index),
+                    _ => None,
+                }
             })
             .collect::<Vec<_>>();
         let previous_cursor_source = previous.source_column_for_visible(previous.cursor.column);
@@ -2989,6 +3025,16 @@ impl TableView {
         }
         self.column_alignment_overrides = vec![None; source_column_count];
         self.column_label_overrides = vec![None; source_column_count];
+        #[cfg(feature = "saved-views")]
+        {
+            // Resident views lack a typed definition: keep the new result's raw
+            // header before restored presentation labels replace it.
+            self.resident_source_header = (self.table_definition.is_none()
+                && previous.saved_binding.is_some()
+                && previous.column_label_overrides.iter().any(Option::is_some))
+            .then(|| self.header.clone())
+            .flatten();
+        }
         self.view_nulls = previous.view_nulls;
         self.column_nulls = vec![None; source_column_count];
         self.column_display = vec![ColumnDisplayMetadata::default(); source_column_count];
@@ -3008,6 +3054,15 @@ impl TableView {
                 .get(old_index)
                 .cloned()
                 .flatten();
+            if let Some(label) = self.column_label_overrides[new_index].as_ref() {
+                if let Some(header) = self
+                    .header
+                    .as_mut()
+                    .and_then(|header| header.get_mut(new_index))
+                {
+                    header.clone_from(label);
+                }
+            }
             self.column_nulls[new_index] = previous.column_nulls.get(old_index).copied().flatten();
             self.column_display[new_index] = previous
                 .column_display
@@ -3020,7 +3075,8 @@ impl TableView {
                 .cloned()
                 .unwrap_or_default();
         }
-        self.rebuild_column_color_metadata();
+        self.compiled_column_colors = vec![None; source_column_count];
+        self.invalidate_color_source_facts();
         self.column_metadata_modified = previous
             .column_metadata_modified
             .iter()
@@ -3054,18 +3110,37 @@ impl TableView {
             .collect();
         #[cfg(feature = "saved-views")]
         {
-            self.pending_saved_columns = previous.pending_saved_columns.clone();
-            self.saved_column_locale = previous.saved_column_locale.clone();
-            self.pending_saved_sorts = previous.pending_saved_sorts.clone();
-            self.pending_saved_filters = previous.pending_saved_filters.clone();
+            self.saved_binding = previous.saved_binding.clone();
+            if let Some(binding) = self.saved_binding.as_mut() {
+                binding.remap_columns(&remap);
+            }
+            self.saved_binding_warnings = previous.saved_binding_warnings.clone();
+            self.saved_column_widths = vec![None; source_column_count];
+            for (old_index, width) in previous.saved_column_widths.iter().copied().enumerate() {
+                if let Some(new_index) = remap.get(old_index).copied().flatten() {
+                    self.saved_column_widths[new_index] = width;
+                }
+            }
         }
-        self.apply_query_configuration();
+        if !self.apply_query_configuration() {
+            anyhow::bail!(
+                "cannot reconstruct local view: {}",
+                self.source_status
+                    .as_deref()
+                    .unwrap_or("source transform failed")
+            );
+        }
+        #[cfg(feature = "saved-views")]
+        self.advance_saved_binding(self.table_definition.as_ref().is_none_or(|definition| {
+            definition.schema_state == crate::table::SchemaState::Complete
+        }));
         if let Some(new_source_column) = previous_cursor_source
             .and_then(|old| remap.get(old).copied().flatten())
             .and_then(|source| self.visible_column_for_source(source))
         {
             self.cursor.column = new_source_column;
         }
+        Ok(())
     }
 
     pub fn hide_current_column(&mut self) {
@@ -3158,28 +3233,25 @@ impl TableView {
     #[cfg(feature = "saved-views")]
     pub fn apply_saved_columns(
         &mut self,
-        resolved: &crate::saved_views::ResolvedColumns,
+        resolved: &[crate::saved_views::ResolvedColumnView],
         locale: Option<&str>,
     ) {
+        if self.table_definition.is_none()
+            && self.resident_source_header.is_none()
+            && resolved.iter().any(|column| column.view.label.is_some())
+        {
+            self.resident_source_header = self.header.clone();
+        }
         self.saved_column_widths
             .resize(self.source_column_count(), None);
-        self.pending_saved_columns.extend(resolved.pending.clone());
-        self.saved_column_locale = locale.map(ToOwned::to_owned);
-        for (source_column, resolved_column) in resolved.columns.iter().enumerate() {
-            let Some(label) = resolved_column
-                .as_ref()
-                .and_then(|resolved| resolved.view.label.as_ref())
-            else {
+        for resolved_column in resolved {
+            let source_column = resolved_column.column_index;
+            let Some(label) = resolved_column.view.label.as_ref() else {
                 continue;
             };
             if let Some(header) = self.header.as_mut() {
                 if let Some(name) = header.get_mut(source_column) {
                     *name = label.clone();
-                }
-            }
-            if let Some(definition) = self.table_definition.as_mut() {
-                if let Some(column) = definition.columns.get_mut(source_column) {
-                    column.display_name = label.clone();
                 }
             }
             if let Some(slot) = self.column_label_overrides.get_mut(source_column) {
@@ -3194,10 +3266,8 @@ impl TableView {
         let max_widths = self.computed_column_widths(ColumnWidthMode::Max);
         let locale = LocaleMetadata::from_posix(locale);
 
-        for (source_column, resolved_column) in resolved.columns.iter().enumerate() {
-            let Some(resolved_column) = resolved_column else {
-                continue;
-            };
+        for resolved_column in resolved {
+            let source_column = resolved_column.column_index;
             let column_view = &resolved_column.view;
             if let Some(slot) = self.column_nulls.get_mut(source_column) {
                 *slot = column_view.nulls;
@@ -3212,6 +3282,7 @@ impl TableView {
                     .column_type
                     .map(column_type_metadata)
                     .unwrap_or(inferred_column_type);
+                display.type_explicit = column_view.column_type.is_some();
                 display.format = column_view
                     .format
                     .map(display_format_metadata)
@@ -3235,15 +3306,11 @@ impl TableView {
                 }
             }
             let colors = column_view.colors.clone();
-            let color_metadata = self.build_column_color_metadata(source_column, &colors, None);
             if let Some(slot) = self.column_color_rules.get_mut(source_column) {
                 *slot = colors;
                 if !slot.is_empty() {
                     self.column_metadata_modified.insert(source_column);
                 }
-            }
-            if let Some(slot) = self.column_color_metadata.get_mut(source_column) {
-                *slot = color_metadata;
             }
             if let Some(width) = column_view.width {
                 if let Some(saved_width) = self.saved_column_widths.get_mut(source_column) {
@@ -3308,37 +3375,8 @@ impl TableView {
         if self.hidden_columns.len() >= self.source_column_count() {
             self.hidden_columns.clear();
         }
+        self.invalidate_conditional_colors();
         self.keep_cursor_visible();
-    }
-
-    #[cfg(feature = "saved-views")]
-    fn resolve_saved_column_widths(&mut self) {
-        if !self.saved_column_widths.iter().any(Option::is_some) {
-            return;
-        }
-        self.ensure_custom_column_widths();
-        let header_widths = self.computed_header_widths();
-        let content_widths = self.computed_content_widths();
-        let mode_widths = self.computed_column_widths(ColumnWidthMode::Mode);
-        let max_widths = self.computed_column_widths(ColumnWidthMode::Max);
-        for (source_column, width) in self.saved_column_widths.iter().enumerate() {
-            let Some(width) = width else { continue };
-            let resolved = match width {
-                crate::saved_views::ColumnWidth::Header => &header_widths,
-                crate::saved_views::ColumnWidth::Content => &content_widths,
-                crate::saved_views::ColumnWidth::Mode => &mode_widths,
-                crate::saved_views::ColumnWidth::Max => &max_widths,
-                crate::saved_views::ColumnWidth::Fixed(_) => continue,
-            }
-            .get(source_column)
-            .copied()
-            .unwrap_or(1)
-            .max(1);
-            if let Some(target) = self.column_widths.get_mut(source_column) {
-                *target = resolved;
-                self.column_width_modified.insert(source_column);
-            }
-        }
     }
 
     #[cfg(feature = "saved-views")]
@@ -3352,162 +3390,105 @@ impl TableView {
         self.apply_query_configuration();
     }
 
+    /// Install the invocation's saved presentation once. The binding owner alone
+    /// interprets references on this and all later schema/profile updates.
     #[cfg(feature = "saved-views")]
-    pub fn retain_pending_saved_operations(
+    pub fn install_saved_binding(
         &mut self,
-        all_sorts: Vec<crate::saved_views::SortKey>,
-        unresolved_filters: Vec<crate::saved_views::SavedFilter>,
+        config: crate::saved_views::SavedViewConfig,
+        sorts_enabled: bool,
     ) {
-        self.pending_saved_sorts = all_sorts;
-        self.pending_saved_filters = unresolved_filters;
-    }
-
-    #[cfg(feature = "saved-views")]
-    fn apply_pending_saved_operations(&mut self, completed: bool) {
-        use crate::saved_views::{FilterAction, FilterKind as SavedFilterKind, SortKind};
-
-        let Some(definition) = self.table_definition.as_ref() else {
-            return;
-        };
-        let mut unresolved_sort = false;
-        let sort_keys = self
-            .pending_saved_sorts
-            .iter()
-            .filter_map(|sort| {
-                let Some(column) = crate::saved_views::resolve_structured_column_reference(
-                    definition,
-                    &sort.column,
-                ) else {
-                    unresolved_sort = true;
-                    return None;
-                };
-                Some(ActiveSortKey {
-                    column,
-                    mode: match sort.kind {
-                        SortKind::Lexical => SortMode::Lexical,
-                        SortKind::Natural => SortMode::Natural,
-                        SortKind::Numeric => SortMode::Numeric,
-                        SortKind::Type => self.type_sort_mode_for_source(column),
-                    },
-                    direction: match sort.direction {
-                        crate::saved_views::SortDirection::Asc => SortDirection::Ascending,
-                        crate::saved_views::SortDirection::Desc => SortDirection::Descending,
-                    },
-                    nulls: self.resolved_null_placement(column),
-                })
-            })
-            .collect::<Vec<_>>();
-        if !self.pending_saved_sorts.is_empty() {
-            self.apply_saved_sort_keys(sort_keys);
-        }
-
-        let pending_filters = std::mem::take(&mut self.pending_saved_filters);
-        let mut still_pending = Vec::new();
-        for filter in pending_filters {
-            let Some(column) = self.table_definition.as_ref().and_then(|definition| {
-                crate::saved_views::resolve_structured_column_reference(definition, &filter.column)
-            }) else {
-                still_pending.push(filter);
-                continue;
-            };
-            let mode = match filter.action {
-                FilterAction::In => FilterMode::In,
-                FilterAction::Out => FilterMode::Out,
-            };
-            let kind = match filter.kind {
-                SavedFilterKind::Text => FilterKind::Text,
-                SavedFilterKind::Regex => FilterKind::Regex,
-                SavedFilterKind::Numeric => FilterKind::Numeric,
-            };
-            if self
-                .apply_source_filter(column, mode, kind, filter.condition.clone())
-                .is_err()
-            {
-                still_pending.push(filter);
-            }
-        }
-        self.pending_saved_filters = still_pending;
-
-        if completed {
-            let mut missing = self
-                .pending_saved_filters
-                .iter()
-                .map(|filter| filter.column.clone())
-                .collect::<Vec<_>>();
-            if unresolved_sort {
-                missing.extend(
-                    self.pending_saved_sorts
-                        .iter()
-                        .filter(|sort| {
-                            self.table_definition.as_ref().is_none_or(|definition| {
-                                crate::saved_views::resolve_structured_column_reference(
-                                    definition,
-                                    &sort.column,
-                                )
-                                .is_none()
-                            })
-                        })
-                        .map(|sort| sort.column.clone()),
-                );
-            }
-            if !missing.is_empty() {
-                missing.sort();
-                missing.dedup();
-                self.source_status = Some(format!(
-                    "Saved view operations reference missing columns: {}",
-                    missing.join(", ")
-                ));
-            }
-            self.pending_saved_sorts.clear();
-            self.pending_saved_filters.clear();
-        } else if !unresolved_sort {
-            self.pending_saved_sorts.clear();
-        }
-    }
-
-    #[cfg(feature = "saved-views")]
-    pub(crate) fn apply_source_filter(
-        &mut self,
-        source_column: usize,
-        mode: FilterMode,
-        kind: FilterKind,
-        input: String,
-    ) -> Result<(), FilterParseError> {
-        if source_column >= self.source_column_count() {
-            return Ok(());
-        }
-        let typed_numeric = self
+        let binding = crate::saved_views::binding::SavedViewBinding::new(config, sorts_enabled);
+        self.set_view_null_placement(binding.nulls());
+        self.saved_binding = Some(binding);
+        self.advance_saved_binding(false);
+        if self
             .table_definition
             .as_ref()
-            .and_then(|definition| definition.columns.get(source_column))
-            .is_some_and(|column| {
-                matches!(
-                    column.source_type,
-                    crate::table::LogicalType::Integer | crate::table::LogicalType::Float
-                )
-            });
-        if kind == FilterKind::Numeric
-            && !self.preview_preparing
-            && !typed_numeric
-            && !self.columns.is_numeric(ColumnIndex::new(source_column))
+            .is_none_or(|definition| definition.schema_state == crate::table::SchemaState::Complete)
         {
-            return Err(FilterParseError::NumericUnavailable);
+            self.advance_saved_binding(true);
         }
-        let condition = FilterCondition::parse(
-            kind,
-            &input,
-            self.source_numeric_column_profile(source_column),
-        )?;
-        self.filters.push(ActiveFilter::new(
-            source_column,
-            mode,
-            kind,
-            input,
-            condition,
-        ));
-        self.computed_column_widths_cache.clear();
-        self.apply_query_configuration();
-        Ok(())
+    }
+
+    #[cfg(feature = "saved-views")]
+    fn saved_binding_headers(&self) -> &[String] {
+        self.resident_source_header
+            .as_deref()
+            .or(self.header.as_deref())
+            .unwrap_or(&[])
+    }
+
+    #[cfg(feature = "saved-views")]
+    pub fn take_saved_binding_warnings(&mut self) -> Vec<crate::saved_views::SavedViewWarning> {
+        std::mem::take(&mut self.saved_binding_warnings)
+    }
+
+    #[cfg(feature = "saved-views")]
+    fn advance_saved_binding(&mut self, profile_definitive: bool) {
+        use crate::saved_views::binding::FilterBindingOutcome;
+
+        let Some(mut binding) = self.saved_binding.take() else {
+            return;
+        };
+        let complete = self.table_definition.as_ref().is_none_or(|definition| {
+            definition.schema_state == crate::table::SchemaState::Complete
+        });
+        let update = binding.advance(
+            self.table_definition.as_ref(),
+            self.saved_binding_headers(),
+            complete,
+        );
+        if !update.columns.is_empty() {
+            self.apply_saved_columns(&update.columns, binding.locale());
+        }
+        self.saved_binding_warnings.extend(update.warnings);
+
+        if let Some(sorts) = update.sorts {
+            let keys = sorts
+                .into_iter()
+                .map(|sort| {
+                    sort.to_active(
+                        self.type_sort_mode_for_source(sort.column),
+                        self.resolved_null_placement(sort.column),
+                    )
+                })
+                .collect();
+            self.apply_saved_sort_keys(keys);
+        }
+
+        for filter in update.filters {
+            let index = filter.index;
+            let column = filter.column;
+            let typed_numeric = self
+                .table_definition
+                .as_ref()
+                .and_then(|definition| definition.columns.get(column))
+                .is_some_and(|source| {
+                    matches!(
+                        source.source_type,
+                        crate::table::LogicalType::Integer | crate::table::LogicalType::Float
+                    )
+                });
+            let numeric_available =
+                typed_numeric || self.columns.is_numeric(ColumnIndex::new(column));
+            let outcome = match filter.parse_active(
+                self.source_numeric_column_profile(column),
+                numeric_available,
+            ) {
+                Ok(active) => {
+                    self.filters.push(active);
+                    self.computed_column_widths_cache.clear();
+                    self.apply_query_configuration();
+                    FilterBindingOutcome::Installed
+                }
+                Err(outcome) => outcome,
+            };
+            if let Some(warning) = binding.filter_feedback(index, outcome, profile_definitive) {
+                self.saved_binding_warnings.push(warning);
+            }
+        }
+        self.saved_binding = Some(binding);
     }
 
     #[cfg(feature = "saved-views")]
@@ -3517,36 +3498,16 @@ impl TableView {
         input_filename: &str,
         locale: Option<&str>,
     ) -> String {
-        self.to_saved_view_yaml_inner(name, input_filename, locale, None)
-    }
-
-    #[cfg(feature = "saved-views")]
-    pub fn to_saved_view_yaml_with_source_options(
-        &self,
-        name: &str,
-        input_filename: &str,
-        locale: Option<&str>,
-        source_options: &crate::ingest::OpenOptions,
-    ) -> String {
-        self.to_saved_view_yaml_inner(name, input_filename, locale, Some(source_options))
-    }
-
-    #[cfg(feature = "saved-views")]
-    fn to_saved_view_yaml_inner(
-        &self,
-        name: &str,
-        input_filename: &str,
-        locale: Option<&str>,
-        source_options: Option<&crate::ingest::OpenOptions>,
-    ) -> String {
         let mut yaml = String::new();
         yaml.push_str(&format!("name: {}\n", yaml_scalar(name)));
         yaml.push_str("filenames:\n");
         yaml.push_str(&format!("  - {}\n", yaml_scalar(input_filename)));
 
         let mut source_yaml = String::new();
-        if let Some(options) = source_options {
-            if let Some(provenance) = &self.source_query_provenance {
+        if let Some(options) = self.committed_source.as_ref() {
+            if options.format != crate::ingest::InputFormat::Auto {
+                source_yaml.push_str(&format!("format: {}\n", options.format));
+            } else if let Some(provenance) = &self.source_query_provenance {
                 source_yaml.push_str(&format!(
                     "format: {}\n",
                     match provenance.language {
@@ -3554,8 +3515,6 @@ impl TableView {
                         crate::table::NativeQueryLanguage::Esql => "elasticsearch",
                     }
                 ));
-            } else if options.format != crate::ingest::InputFormat::Auto {
-                source_yaml.push_str(&format!("format: {}\n", options.format));
             }
             if let Some(json_path) = &options.json_path {
                 source_yaml.push_str(&format!("json_path: {}\n", yaml_scalar(json_path.as_str())));
@@ -3565,33 +3524,16 @@ impl TableView {
             }
             if let Some(query) = &options.native_query {
                 source_yaml.push_str(&format!("query: {}\n", yaml_scalar(query)));
-            } else if let Some(table) = options.table.as_ref().or_else(|| {
-                self.active_source_query
-                    .as_ref()
-                    .filter(|query| query.native_query.is_none())
-                    .and(self.table_definition.as_ref())
-                    .map(|definition| &definition.relation.name)
-            }) {
+            } else if let Some(table) = &options.table {
                 source_yaml.push_str(&format!("table: {}\n", yaml_scalar(table)));
             }
-        }
-        if let Some(object_mode) = self.object_mode {
-            source_yaml.push_str(&format!("object_mode: {}\n", object_mode.resolved));
-        }
-        if let Some(query) = &self.active_source_query {
-            if query.limit != std::num::NonZeroUsize::MAX {
-                source_yaml.push_str(&format!("limit: {}\n", query.limit));
+            if let Some(limit) = options.limit {
+                source_yaml.push_str(&format!("limit: {}\n", limit));
             }
-            if !query.filters.is_empty() {
+            if !options.source_filters.is_empty() {
                 source_yaml.push_str("filters:\n");
-                for filter in &query.filters {
-                    let column = match filter.scope {
-                        crate::table::SourceFilterScope::WholeRecord => "*".to_owned(),
-                        crate::table::SourceFilterScope::Column(column) => self
-                            .source_column_name_for_id(column)
-                            .unwrap_or_else(|| format!("column_{}", column.ordinal + 1)),
-                    };
-                    source_yaml.push_str(&format!("  - column: {}\n", yaml_scalar(&column)));
+                for filter in &options.source_filters {
+                    source_yaml.push_str(&format!("  - column: {}\n", yaml_scalar(&filter.column)));
                     source_yaml.push_str(&format!(
                         "    operator: {}\n",
                         source_filter_operator_name(filter.operator)
@@ -3602,13 +3544,10 @@ impl TableView {
                     }
                 }
             }
-            if !query.order_by.is_empty() {
+            if !options.source_sort.is_empty() {
                 source_yaml.push_str("sort:\n");
-                for sort in &query.order_by {
-                    let column = self
-                        .source_column_name_for_id(sort.column)
-                        .unwrap_or_else(|| format!("column_{}", sort.column.ordinal + 1));
-                    source_yaml.push_str(&format!("  - column: {}\n", yaml_scalar(&column)));
+                for sort in &options.source_sort {
+                    source_yaml.push_str(&format!("  - column: {}\n", yaml_scalar(&sort.column)));
                     source_yaml.push_str(&format!(
                         "    direction: {}\n",
                         match sort.direction {
@@ -3618,6 +3557,9 @@ impl TableView {
                     ));
                 }
             }
+        }
+        if let Some(object_mode) = self.object_mode {
+            source_yaml.push_str(&format!("object_mode: {}\n", object_mode.resolved));
         }
         if source_yaml.is_empty() {
             yaml.push_str("source: {}\n");
@@ -3962,188 +3904,116 @@ impl TableView {
     }
 
     fn render_source_cell(&self, source_column: usize, raw: Option<&str>) -> String {
-        let raw = raw.unwrap_or_default();
-        let metadata = self
-            .column_display
-            .get(source_column)
-            .copied()
-            .unwrap_or_default();
-        match metadata.format {
-            DisplayFormatMetadata::Plain => raw.to_owned(),
-            DisplayFormatMetadata::Uppercase => raw.to_uppercase(),
-            DisplayFormatMetadata::Lowercase => raw.to_lowercase(),
-            DisplayFormatMetadata::Locale => self
-                .format_locale_number(raw, source_column, metadata.locale)
-                .unwrap_or_else(|| raw.to_owned()),
-            DisplayFormatMetadata::Mask => metadata
-                .mask
-                .and_then(|mask| self.format_masked_number(raw, source_column, mask))
-                .unwrap_or_else(|| raw.to_owned()),
-            DisplayFormatMetadata::BooleanChar => parse_bool_key(raw)
-                .map(|value| if value { "y" } else { "n" }.to_owned())
-                .unwrap_or_else(|| raw.to_owned()),
-            DisplayFormatMetadata::BooleanBit => parse_bool_key(raw)
-                .map(|value| if value { "1" } else { "0" }.to_owned())
-                .unwrap_or_else(|| raw.to_owned()),
-            DisplayFormatMetadata::BooleanWord => parse_bool_key(raw)
-                .map(|value| if value { "true" } else { "false" }.to_owned())
-                .unwrap_or_else(|| raw.to_owned()),
-        }
-    }
-
-    fn format_locale_number(
-        &self,
-        raw: &str,
-        source_column: usize,
-        locale: LocaleMetadata,
-    ) -> Option<String> {
-        let value = parse_numeric_scalar(raw, self.source_numeric_column_profile(source_column))?;
-        let decimal_places = raw
-            .split_once('.')
-            .map(|(_, fraction)| {
-                fraction
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_digit())
-                    .count()
-            })
-            .unwrap_or(0);
-        Some(format_number_parts(value, decimal_places, true, locale))
-    }
-
-    fn format_masked_number(
-        &self,
-        raw: &str,
-        source_column: usize,
-        mask: NumberMaskMetadata,
-    ) -> Option<String> {
-        let value = parse_numeric_scalar(raw, self.source_numeric_column_profile(source_column))?;
-        Some(format_number_parts(
-            value,
-            mask.decimal_places,
-            mask.grouped,
-            LocaleMetadata::en_us(),
-        ))
-    }
-
-    fn rebuild_column_color_metadata(&mut self) {
-        if self.preview_preparing {
-            return;
-        }
-        let exact_profiles = self.exact_reduction_profiles().ok().flatten();
-        self.column_color_metadata = (0..self.source_column_count())
-            .map(|source_column| {
-                let rules = self
-                    .column_color_rules
-                    .get(source_column)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                self.build_column_color_metadata(
-                    source_column,
-                    rules,
-                    exact_profiles
-                        .as_ref()
-                        .and_then(|profiles| profiles.get(source_column)),
-                )
-            })
-            .collect();
-    }
-
-    fn rebuild_column_color_metadata_for(&mut self, source_column: usize) {
-        if self.preview_preparing {
-            return;
-        }
-        let exact_profile = self
-            .exact_reduction_profiles()
-            .ok()
-            .flatten()
-            .and_then(|profiles| profiles.get(source_column).cloned());
-        let metadata = {
-            let rules = self
-                .column_color_rules
+        render::cell(
+            self.column_display
                 .get(source_column)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            self.build_column_color_metadata(source_column, rules, exact_profile.as_ref())
-        };
-        if let Some(slot) = self.column_color_metadata.get_mut(source_column) {
-            *slot = metadata;
+                .copied()
+                .unwrap_or_default(),
+            self.source_numeric_column_profile(source_column),
+            raw.unwrap_or_default(),
+        )
+    }
+
+    fn invalidate_conditional_colors(&mut self) {
+        self.color_cache_valid = false;
+    }
+
+    fn invalidate_color_source_facts(&mut self) {
+        self.exact_color_profiles = None;
+        self.invalidate_conditional_colors();
+    }
+
+    fn refresh_resident_color_facts_on_append(&mut self) {
+        if self.color_cache_valid
+            && self
+                .column_color_rules
+                .iter()
+                .enumerate()
+                .any(|(column, rules)| {
+                    let demand = ColorProfileDemand::for_rules(rules);
+                    let exact = self
+                        .exact_color_profiles
+                        .as_ref()
+                        .and_then(|profiles| profiles.get(column));
+                    (demand.extrema && exact.and_then(|profile| profile.numeric_min_max).is_none())
+                        || (demand.identifiers && exact.is_none())
+                })
+        {
+            self.invalidate_conditional_colors();
         }
     }
 
-    fn build_column_color_metadata(
-        &self,
-        source_column: usize,
-        rules: &[ConditionalColorRule],
-        exact_profile: Option<&crate::table::ColumnReductionProfile>,
-    ) -> ColumnColorMetadata {
-        let numeric_min_max = rules
-            .iter()
-            .any(|rule| matches!(rule, ConditionalColorRule::AutoGradient { .. }))
-            .then(|| {
-                exact_profile
-                    .and_then(|profile| profile.numeric_min_max)
-                    .or_else(|| self.numeric_min_max(source_column))
-            })
-            .flatten();
-        let identifier_indexes = if rules
-            .iter()
-            .any(|rule| matches!(rule, ConditionalColorRule::Identifiers { .. }))
-        {
-            exact_profile
-                .map(|profile| {
-                    profile
-                        .identifiers
-                        .iter()
-                        .cloned()
-                        .enumerate()
-                        .map(|(index, value)| (value, index))
-                        .collect()
-                })
-                .unwrap_or_else(|| self.identifier_indexes(source_column))
-        } else {
-            BTreeMap::new()
-        };
-        let identifier_color_refs = rules
-            .iter()
-            .enumerate()
-            .filter_map(|(rule_idx, rule)| {
-                let ConditionalColorRule::Identifiers { colors } = rule else {
-                    return None;
-                };
-                let color_refs = identifier_indexes
+    /// Prepare only when a renderer demands conditional foregrounds. Binding and
+    /// plain output retain configured rules without inspecting a color-only profile.
+    pub(crate) fn prepare_conditional_colors(&mut self, theme: &ResolvedTheme) {
+        if self.color_cache_valid {
+            debug_assert!(
+                self.compiled_column_colors
                     .iter()
-                    .map(|(value, index)| (value.clone(), identifier_color_ref(*index, colors)))
-                    .collect::<BTreeMap<_, _>>();
-                Some((rule_idx, color_refs))
-            })
-            .collect();
-        let gradient_color_refs = rules
-            .iter()
-            .enumerate()
-            .filter_map(|(rule_idx, rule)| {
-                let ConditionalColorRule::AutoGradient { colors, steps } = rule else {
-                    return None;
-                };
-                let steps = (*steps).max(1);
-                let color_refs = (0..steps)
-                    .map(|bucket| gradient_color_ref(colors, bucket, steps))
-                    .collect::<Vec<_>>();
-                Some((rule_idx, color_refs))
-            })
-            .collect();
-        ColumnColorMetadata {
-            numeric_min_max,
-            identifier_color_refs,
-            gradient_color_refs,
+                    .flatten()
+                    .all(|compiled| compiled.scope() == ColorProfileScope::CompleteResult),
+                "live rendering cannot reuse an emitted-preview profile"
+            );
+            return;
         }
+        let needs_profile = self
+            .column_color_rules
+            .iter()
+            .any(|rules| ColorProfileDemand::for_rules(rules).needs_profile());
+        if needs_profile && self.exact_color_profiles.is_none() {
+            self.exact_color_profiles = self.exact_reduction_profiles().ok().flatten();
+        }
+        self.compiled_column_colors = (0..self.source_column_count())
+            .map(|source_column| {
+                let rules = self.column_color_rules.get(source_column)?;
+                if rules.is_empty() {
+                    return None;
+                }
+                let exact_profile = self
+                    .exact_color_profiles
+                    .as_ref()
+                    .and_then(|profiles| profiles.get(source_column));
+                let demand = ColorProfileDemand::for_rules(rules);
+                let numeric_min_max = if demand.extrema {
+                    exact_profile
+                        .and_then(|profile| profile.numeric_min_max)
+                        .or_else(|| self.numeric_min_max(source_column))
+                } else {
+                    None
+                };
+                let identifier_indexes = if demand.identifiers {
+                    exact_profile
+                        .map(|profile| {
+                            profile
+                                .identifiers
+                                .iter()
+                                .cloned()
+                                .enumerate()
+                                .map(|(index, value)| (value, index))
+                                .collect()
+                        })
+                        .unwrap_or_else(|| self.identifier_indexes(source_column))
+                } else {
+                    BTreeMap::new()
+                };
+                Some(CompiledColumnColors::prepare(
+                    theme,
+                    rules,
+                    ColumnColorProfile {
+                        scope: ColorProfileScope::CompleteResult,
+                        numeric_profile: self.source_numeric_column_profile(source_column),
+                        numeric_min_max,
+                        identifier_indexes,
+                    },
+                ))
+            })
+            .collect();
+        self.color_cache_valid = true;
     }
 
     fn exact_reduction_profiles(
         &mut self,
     ) -> anyhow::Result<Option<Vec<crate::table::ColumnReductionProfile>>> {
-        if self.preview_preparing {
-            return Ok(None);
-        }
         let shared = if self.view_transform_is_active() {
             self.query_store.clone()
         } else {
@@ -4595,6 +4465,12 @@ fn mode_width(rows: &[Vec<String>], column: usize, _gap: usize) -> usize {
 }
 
 #[cfg(test)]
+mod lifecycle_tests;
+
+#[cfg(all(test, feature = "saved-views"))]
+mod color_profile_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingest::SourceAdapter;
@@ -4610,6 +4486,15 @@ mod tests {
             .iter()
             .map(|row| row.iter().map(|cell| (*cell).to_owned()).collect())
             .collect()
+    }
+
+    #[cfg(feature = "saved-views")]
+    fn color_at(view: &mut TableView, row: usize, column: usize) -> Option<ratatui::style::Color> {
+        view.prepare_conditional_colors(&crate::theme::default_theme());
+        let rendered = view.rendered_visible_row(row)?;
+        let source_column = view.source_column_for_visible(column)?;
+        view.source_cell_style_context(row, source_column, rendered.get(column)?, None)
+            .conditional_color
     }
 
     #[derive(Clone)]
@@ -4831,6 +4716,108 @@ mod tests {
         let view = TableView::classify(rows(&[&["1", "2"], &["3", "4"]]), Viewport::new(10, 4));
         assert!(view.header().is_none());
         assert_eq!(view.rows(), rows(&[&["1", "2"], &["3", "4"]]));
+    }
+
+    #[test]
+    fn failed_projection_preserves_discovered_schema_for_live_indexing() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+
+        struct SchemaThenError {
+            inner: InMemoryTable,
+            late: ColumnDefinition,
+            phase: Arc<AtomicU8>,
+        }
+
+        impl TableStore for SchemaThenError {
+            fn generation(&self) -> SourceGeneration {
+                self.inner.generation()
+            }
+
+            fn row_count(&self) -> RowCount {
+                self.inner.row_count()
+            }
+
+            fn column_count(&self) -> usize {
+                if self.phase.load(Ordering::Relaxed) >= 2 {
+                    2
+                } else {
+                    1
+                }
+            }
+
+            fn row(&mut self, index: RowIndex) -> anyhow::Result<Option<Row>> {
+                self.inner.row(index)
+            }
+
+            fn ensure_indexed_through(&mut self, index: RowIndex) -> anyhow::Result<IndexProgress> {
+                if self.phase.load(Ordering::Relaxed) == 2 && index.0 == usize::MAX {
+                    self.phase.store(3, Ordering::Relaxed);
+                    anyhow::bail!("injected read failure after schema discovery");
+                }
+                let mut progress = self.inner.ensure_indexed_through(index)?;
+                if self.phase.load(Ordering::Relaxed) == 1 {
+                    self.phase.store(2, Ordering::Relaxed);
+                    progress.schema_delta.added_columns.push(self.late.clone());
+                }
+                Ok(progress)
+            }
+
+            fn scan_rows(
+                &mut self,
+                request: ScanRequest,
+                visitor: &mut dyn crate::table::RowVisitor,
+            ) -> anyhow::Result<ScanProgress> {
+                self.inner.scan_rows(request, visitor)
+            }
+
+            fn materialize(&mut self) -> anyhow::Result<InMemoryTable> {
+                self.inner.materialize()
+            }
+        }
+
+        let mut opened = query_test_table(&["alpha"], false);
+        let generation = opened.generation;
+        let phase = Arc::new(AtomicU8::new(0));
+        let mut late = opened.definition.columns[0].clone();
+        late.id.ordinal = 1;
+        late.source_identity = ColumnSourceIdentity::Positional(1);
+        late.display_name = "late".to_owned();
+        late.source_type = LogicalType::Integer;
+        opened.store = Box::new(SchemaThenError {
+            inner: InMemoryTable::from_rows(
+                generation,
+                vec![Row::new(
+                    RowId {
+                        generation,
+                        ordinal: 0,
+                    },
+                    vec![CellValue::Text("alpha".to_owned()), CellValue::Integer(7)],
+                )],
+            )
+            .unwrap(),
+            late,
+            phase: phase.clone(),
+        });
+        let mut view = TableView::from_opened_table(opened, Viewport::new(1, 1)).unwrap();
+        phase.store(1, Ordering::Relaxed);
+
+        let error = view
+            .prepare_projection(
+                crate::output::requirements(
+                    crate::output::OutputFormat::Json,
+                    crate::output::ColorOutput::Never,
+                )
+                .unwrap(),
+                &crate::theme::default_theme(),
+            )
+            .err()
+            .expect("projection must report the read failure");
+        assert!(error.to_string().contains("injected read failure"));
+
+        view.ensure_source_indexed_through(0).unwrap();
+        assert_eq!(view.header().unwrap(), ["value", "late"]);
+        assert_eq!(view.rendered_visible_row(0).unwrap(), ["alpha", "7"]);
     }
 
     #[test]
@@ -5066,7 +5053,9 @@ mod tests {
             .expect("table");
         let mut reloaded =
             TableView::from_opened_table(opened, Viewport::new(5, 2)).expect("replacement view");
-        reloaded.restore_view_settings_from(&previous);
+        reloaded
+            .restore_view_settings_from(&previous)
+            .expect("compatible view");
 
         assert_ne!(reloaded.source_generation(), old_generation);
         assert_eq!(reloaded.cursor().column, 0, "cursor follows canonical /b");
@@ -5075,6 +5064,40 @@ mod tests {
             reloaded.mark().is_none(),
             "row identity is generation-scoped"
         );
+    }
+
+    #[test]
+    fn unrelated_structured_column_does_not_inherit_hidden_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fields.json");
+        std::fs::write(&path, r#"[{"old":1,"stable":2}]"#).expect("source");
+        let options = crate::ingest::OpenOptions {
+            format: crate::ingest::InputFormat::Json,
+            ..crate::ingest::OpenOptions::default()
+        };
+        let source = crate::ingest::source::InputSource::Path(path.clone());
+        let opened = crate::ingest::open_source(source.clone(), &options)
+            .expect("open")
+            .into_implicit_table()
+            .expect("table");
+        let mut previous = TableView::from_opened_table(opened, Viewport::new(5, 2)).expect("view");
+        previous.goto(0, 0);
+        previous.hide_current_column();
+        previous.set_current_column_width(17);
+
+        std::fs::write(&path, r#"[{"new":3,"stable":2}]"#).expect("replacement");
+        let opened = crate::ingest::open_source(source, &options)
+            .expect("reopen")
+            .into_implicit_table()
+            .expect("table");
+        let mut replacement =
+            TableView::from_opened_table(opened, Viewport::new(5, 2)).expect("replacement view");
+        replacement
+            .restore_view_settings_from(&previous)
+            .expect("compatible state");
+        assert_eq!(replacement.visible_rows_vec(), rows(&[&["3", "2"]]));
+        assert_eq!(replacement.column_count(), 2);
+        assert_ne!(replacement.effective_column_widths()[0], 17);
     }
 
     #[test]
@@ -5531,10 +5554,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         assert_eq!(view.column_count(), 2);
         assert_eq!(view.effective_column_widths(), vec![5, 12]);
@@ -5580,10 +5600,7 @@ view:
 "##,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-
-        view.apply_saved_columns(&resolved, parsed.view.view.locale.as_deref());
+        view.install_saved_binding(parsed.view.view, true);
 
         assert_eq!(
             view.visible_rows_vec(),
@@ -5615,9 +5632,9 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, Some("en_US"));
+        let mut config = parsed.view.view;
+        config.locale = Some("en_US".to_owned());
+        view.install_saved_binding(config, true);
 
         assert_eq!(
             view.search_rows_vec(),
@@ -5665,29 +5682,127 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         assert_eq!(
-            view.conditional_color_for_visible_cell(0, 0),
-            Some("green".to_owned())
+            color_at(&mut view, 0, 0),
+            Some(ratatui::style::Color::Rgb(0, 192, 0))
         );
         assert_eq!(
-            view.conditional_color_for_visible_cell(0, 1),
-            Some("red".to_owned())
+            color_at(&mut view, 0, 1),
+            Some(ratatui::style::Color::Rgb(255, 0, 0))
         );
         assert_eq!(
-            view.conditional_color_for_visible_cell(1, 1),
-            Some("gradient(4;8;5:green6:yellow)".to_owned())
+            color_at(&mut view, 1, 1),
+            Some(ratatui::style::Color::Rgb(146, 228, 0))
         );
-        assert!(matches!(
-            view.conditional_color_for_source_cell(1, "50%", "50%"),
-            Some(Cow::Borrowed(_))
-        ));
         assert_eq!(
             view.visible_rows_vec(),
             rows(&[&["active", "5%"], &["idle", "50%"], &["down", "95%"]])
+        );
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn color_demand_profiles_only_dependent_rules_and_uses_offscreen_typed_extrema() {
+        let mut opened = query_test_table(&["50", "1", "100"], false);
+        let generation = opened.generation;
+        opened.definition.columns[0].source_type = LogicalType::Integer;
+        opened.store = Box::new(QueryTestStore {
+            generation,
+            rows: [50, 1, 100]
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, value)| {
+                    Row::new(
+                        RowId {
+                            generation,
+                            ordinal: ordinal as u64,
+                        },
+                        vec![CellValue::Integer(value)],
+                    )
+                })
+                .collect(),
+            indexed: 0,
+            fail_materialize: false,
+        });
+        let mut view = TableView::from_opened_table(opened, Viewport::new(1, 1)).expect("view");
+        let fixed = crate::saved_views::parse_saved_view_yaml(
+            "name: fixed\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    value:\n      colors:\n        - match:\n            '50': green\n",
+        )
+        .expect("fixed saved view");
+        view.install_saved_binding(fixed.view.view, true);
+        view.take_source_status();
+        view.prepare_conditional_colors(&crate::theme::default_theme());
+        assert!(
+            view.take_source_status().is_none(),
+            "match rules need no exact color profile"
+        );
+        assert_eq!(view.rows.len(), 1);
+        let gradient = crate::saved_views::parse_saved_view_yaml(
+            "name: gradient\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    value:\n      colors:\n        - gradient:\n            mode: auto\n            steps: 4\n            colors: [black, white]\n",
+        )
+        .expect("gradient saved view");
+        view.install_saved_binding(gradient.view.view, true);
+        view.take_source_status();
+        assert_eq!(
+            view.rows.len(),
+            1,
+            "binding cannot profile for color demand"
+        );
+        assert_eq!(
+            color_at(&mut view, 0, 0),
+            Some(ratatui::style::Color::Rgb(85, 85, 85))
+        );
+        assert_eq!(
+            view.take_source_status().as_deref(),
+            Some("Profiled 3 rows")
+        );
+        assert_eq!(
+            view.rows.len(),
+            1,
+            "exact color profile does not widen resident viewport"
+        );
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn exact_store_identifier_keys_keep_raw_display_misses_without_rendered_fallback() {
+        let saved = crate::saved_views::parse_saved_view_yaml(
+            "name: identifiers\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    value:\n      type: text\n      format: uppercase\n      colors:\n        - identifiers:\n            colors: [green, red]\n",
+        )
+        .expect("saved view");
+        let mut store = TableView::from_opened_table(
+            query_test_table(&["alpha", "beta"], false),
+            Viewport::new(1, 1),
+        )
+        .expect("store view");
+        store.install_saved_binding(saved.view.view.clone(), true);
+        assert_eq!(
+            store.rendered_visible_row(0),
+            Some(vec!["ALPHA".to_owned()])
+        );
+        assert_eq!(
+            color_at(&mut store, 0, 0),
+            None,
+            "raw store key does not match rendered uppercase text"
+        );
+        assert_eq!(
+            store.take_source_status().as_deref(),
+            Some("Profiled 2 rows")
+        );
+
+        let mut resident = TableView::classify(
+            rows(&[&["value"], &["alpha"], &["ALPHA"], &["beta"]]),
+            Viewport::new(1, 1),
+        );
+        resident.install_saved_binding(saved.view.view, true);
+        let first = color_at(&mut resident, 0, 0);
+        assert!(first.is_some(), "resident keys use rendered values");
+        assert_eq!(
+            color_at(&mut resident, 1, 0),
+            first,
+            "equal rendered identifiers share a key"
         );
     }
 
@@ -5709,9 +5824,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         let yaml = view.to_saved_view_yaml("colors", "data.csv", None);
 
@@ -5719,6 +5832,87 @@ view:
         assert_eq!(
             conditional_value_yaml(&ConditionalValue::String("a\nb".to_owned())),
             "\"a\\nb\""
+        );
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn rendering_keeps_original_conditional_yaml_values_for_save_and_reopen() {
+        let original = crate::saved_views::parse_saved_view_yaml(
+            r##"
+name: configured
+filenames: ["*"]
+source: {}
+view:
+  columns:
+    Code:
+      colors:
+        - match:
+            "10": "a,b:c(β)"
+            10: green
+    Family:
+      colors:
+        - identifiers:
+            colors: ["a,b:c(β)", "#25A39AFF"]
+    Scale:
+      colors:
+        - gradient:
+            mode: auto
+            steps: 3
+            colors: ["a,b:c(β)", green]
+"##,
+        )
+        .expect("original saved view");
+        let mut view = TableView::classify(
+            rows(&[
+                &["Code", "Family", "Scale"],
+                &["10", "alpha", "5"],
+                &["20", "beta", "10"],
+            ]),
+            Viewport::new(10, 3),
+        );
+        view.install_saved_binding(original.view.view.clone(), true);
+        let fixture = include_str!("../../examples/data/config/themes/cmdzro.yml")
+            .replace("  hex_teal:", "  \"a,b:c(β)\": \"#25A39AFF\"\n  hex_teal:");
+        let theme =
+            crate::theme::parse_theme_yaml(&fixture, crate::theme::TerminalColorMode::TrueColor)
+                .expect("selected theme");
+        view.prepare_conditional_colors(&theme);
+        let rendered = view.rendered_visible_row(0).expect("rendered row");
+        let foregrounds = rendered
+            .iter()
+            .enumerate()
+            .map(|(column, cell)| {
+                let source_column = view
+                    .source_column_for_visible(column)
+                    .expect("source column");
+                view.source_cell_style_context(0, source_column, cell, None)
+                    .conditional_color
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            foregrounds,
+            vec![
+                Some(ratatui::style::Color::Rgb(37, 163, 154)),
+                Some(ratatui::style::Color::Rgb(19, 100, 100)),
+                Some(ratatui::style::Color::Rgb(37, 163, 154)),
+            ]
+        );
+
+        let saved = view.to_saved_view_yaml("configured", "data.csv", None);
+        let reopened = crate::saved_views::parse_saved_view_yaml(&saved).expect("reopened view");
+        for (name, configured) in &original.view.view.columns {
+            assert_eq!(
+                reopened.view.view.columns[name].colors, configured.colors,
+                "configured conditional rules must survive rendering and saving"
+            );
+        }
+        let code_rules = &reopened.view.view.columns["Code"].colors;
+        assert!(
+            matches!(&code_rules[0], ConditionalColorRule::Match { entries }
+            if matches!((&entries[0].value, &entries[1].value),
+                (ConditionalValue::String(string), ConditionalValue::Number(number))
+                if string == "10" && *number == 10.0))
         );
     }
 
@@ -5756,12 +5950,10 @@ view:
                 .as_deref(),
             Some("@key")
         );
-        let yaml = view.to_saved_view_yaml_with_source_options(
-            "repositories",
-            "repositories.json",
-            None,
-            &options,
-        );
+        let mut view = view;
+        view.initialize_source_configuration(options)
+            .expect("committed source");
+        let yaml = view.to_saved_view_yaml("repositories", "repositories.json", None);
         assert!(yaml.contains("source:\n  format: json\n  object_mode: entries\n"));
         assert!(yaml.contains("\nview: {}\n"));
 
@@ -5779,15 +5971,13 @@ view:
             .expect("record open")
             .into_implicit_table()
             .expect("record table");
-        let record_view =
+        let mut record_view =
             TableView::from_opened_table(record, Viewport::new(8, 80)).expect("record view");
+        record_view
+            .initialize_source_configuration(record_options)
+            .expect("committed source");
         assert!(record_view
-            .to_saved_view_yaml_with_source_options(
-                "record",
-                "repositories.json",
-                None,
-                &record_options,
-            )
+            .to_saved_view_yaml("record", "repositories.json", None)
             .contains("source:\n  format: json\n  object_mode: record\n"));
 
         let array_path = dir.path().join("array.json");
@@ -5812,7 +6002,7 @@ view:
 
     #[cfg(feature = "saved-views")]
     #[test]
-    fn column_info_updates_rebuild_identifier_color_metadata() {
+    fn column_info_format_changes_keep_identifier_foreground_on_rendered_value() {
         let mut view = TableView::classify(rows(&[&["Name"], &["alpha"]]), Viewport::new(10, 1));
         let parsed = crate::saved_views::parse_saved_view_yaml(
             r#"
@@ -5830,15 +6020,11 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         assert_eq!(view.visible_rows_vec(), rows(&[&["ALPHA"]]));
-        assert_eq!(
-            view.conditional_color_for_visible_cell(0, 0),
-            Some("identifier(0)".to_owned())
-        );
+        let first = color_at(&mut view, 0, 0);
+        assert!(first.is_some());
 
         view.apply_current_column_info(ColumnInfoUpdate {
             visible: true,
@@ -5851,10 +6037,7 @@ view:
         });
 
         assert_eq!(view.visible_rows_vec(), rows(&[&["alpha"]]));
-        assert_eq!(
-            view.conditional_color_for_visible_cell(0, 0),
-            Some("identifier(0)".to_owned())
-        );
+        assert_eq!(color_at(&mut view, 0, 0), first);
     }
 
     #[cfg(feature = "saved-views")]
@@ -5878,28 +6061,26 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
-        let first = view
-            .conditional_color_for_visible_cell(0, 0)
-            .expect("first color");
-        let second = view
-            .conditional_color_for_visible_cell(1, 0)
-            .expect("second color");
-        let repeated = view
-            .conditional_color_for_visible_cell(2, 0)
-            .expect("repeated color");
-
+        let first = color_at(&mut view, 0, 0).expect("first foreground");
+        let second = color_at(&mut view, 1, 0).expect("second foreground");
+        let repeated = color_at(&mut view, 2, 0).expect("repeated foreground");
         assert_ne!(first, second);
         assert_eq!(first, repeated);
-        assert!(first.starts_with("identifier("));
+        view.sort_current_column(SortMode::Lexical, SortDirection::Descending);
+        assert_eq!(
+            view.visible_raw_rows_vec(),
+            rows(&[&["10.0.0.2"], &["10.0.0.2"], &["10.0.0.1"]])
+        );
+        assert_eq!(color_at(&mut view, 0, 0), Some(first));
+        assert_eq!(color_at(&mut view, 1, 0), Some(first));
+        assert_eq!(color_at(&mut view, 2, 0), Some(second));
     }
 
     #[cfg(feature = "saved-views")]
     #[test]
-    fn restored_view_settings_preserve_conditional_color_cache() {
+    fn restored_view_settings_keep_identifier_foregrounds() {
         let mut view = TableView::classify(
             rows(&[&["Address"], &["10.0.0.2"], &["10.0.0.1"]]),
             Viewport::new(10, 1),
@@ -5918,20 +6099,70 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(parsed.view.view, true);
 
         let mut restored = TableView::classify(
             rows(&[&["Address"], &["10.0.0.2"], &["10.0.0.1"]]),
             Viewport::new(10, 1),
         );
-        restored.restore_view_settings_from(&view);
+        restored
+            .restore_view_settings_from(&view)
+            .expect("compatible view");
 
+        assert_eq!(color_at(&mut restored, 0, 0), color_at(&mut view, 0, 0));
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn resident_source_labels_survive_override_and_restoration_without_aliasing() {
+        let saved = crate::saved_views::parse_saved_view_yaml(
+            "name: count\nfilenames: []\nsource: {}\nview:\n  columns:\n    count: {label: Total}\n  sort:\n    - {column: count, direction: asc, kind: numeric}\n",
+        )
+        .expect("saved view");
+        let source = rows(&[&["count"], &["10"], &["2"], &["1"]]);
+        let mut view = TableView::classify(source.clone(), Viewport::new(10, 1));
+        view.install_saved_binding(saved.view.view, true);
+        assert_eq!(view.header().expect("header"), ["Total"]);
         assert_eq!(
-            restored.conditional_color_for_visible_cell(0, 0),
-            view.conditional_color_for_visible_cell(0, 0)
+            view.visible_raw_rows_vec(),
+            rows(&[&["1"], &["2"], &["10"]])
         );
+        assert!(view.take_saved_binding_warnings().is_empty());
+
+        let mut restored = TableView::classify(source.clone(), Viewport::new(10, 1));
+        restored
+            .restore_view_settings_from(&view)
+            .expect("compatible resident view");
+        assert_eq!(restored.header().expect("header"), ["Total"]);
+        assert_eq!(
+            restored.visible_raw_rows_vec(),
+            rows(&[&["1"], &["2"], &["10"]])
+        );
+
+        let filter = crate::saved_views::parse_saved_view_yaml(
+            "name: source\nfilenames: []\nsource: {}\nview:\n  filters:\n    - {column: count, action: in, kind: numeric, condition: '>2'}\n",
+        )
+        .expect("source-label filter");
+        let mut alias = TableView::classify(source, Viewport::new(10, 1));
+        alias
+            .restore_view_settings_from(&view)
+            .expect("compatible resident view");
+        restored.install_saved_binding(filter.view.view, true);
+        assert_eq!(restored.visible_raw_rows_vec(), rows(&[&["10"]]));
+        assert!(restored.take_saved_binding_warnings().is_empty());
+
+        let filter = crate::saved_views::parse_saved_view_yaml(
+            "name: alias\nfilenames: []\nsource: {}\nview:\n  filters:\n    - {column: Total, action: in, kind: numeric, condition: '>2'}\n",
+        )
+        .expect("alias filter");
+        alias.install_saved_binding(filter.view.view, true);
+        assert_eq!(
+            alias.visible_raw_rows_vec(),
+            rows(&[&["1"], &["2"], &["10"]])
+        );
+        let warnings = alias.take_saved_binding_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].field, "view.filters[0].column");
     }
 
     #[cfg(feature = "saved-views")]
@@ -5957,9 +6188,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = date_view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        date_view.apply_saved_columns(&resolved, None);
+        date_view.install_saved_binding(parsed.view.view, true);
         date_view.sort_current_column(SortMode::Lexical, SortDirection::Ascending);
         assert_eq!(
             date_view.visible_raw_rows_vec(),
@@ -5982,9 +6211,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = semver_view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        semver_view.apply_saved_columns(&resolved, None);
+        semver_view.install_saved_binding(parsed.view.view, true);
         semver_view.sort_current_column(SortMode::Lexical, SortDirection::Ascending);
         assert_eq!(
             semver_view.visible_raw_rows_vec(),
@@ -6007,9 +6234,7 @@ view:
 "#,
         )
         .expect("parse");
-        let headers = ip_view.header().expect("header").to_vec();
-        let resolved = crate::saved_views::resolve_columns(&parsed.view, &headers);
-        ip_view.apply_saved_columns(&resolved, None);
+        ip_view.install_saved_binding(parsed.view.view, true);
         ip_view.sort_current_column(SortMode::Lexical, SortDirection::Ascending);
         assert_eq!(
             ip_view.visible_raw_rows_vec(),
@@ -6155,12 +6380,7 @@ view:
 "#,
         )
         .expect("saved");
-        let resolved = crate::saved_views::resolve_structured_columns(
-            &saved.view,
-            view.table_definition().expect("definition"),
-        );
-        assert!(resolved.pending.contains_key("/late"));
-        view.apply_saved_columns(&resolved, None);
+        view.install_saved_binding(saved.view.view, true);
 
         view.goto(1, 0);
         assert_eq!(view.header().unwrap()[1], "Later");
@@ -6206,18 +6426,151 @@ view:
 "#,
         )
         .expect("saved");
-        view.retain_pending_saved_operations(
-            saved.view.view.sort.clone(),
-            saved.view.view.filters.clone(),
-        );
+        view.install_saved_binding(saved.view.view, true);
 
         view.goto(1, 0);
 
-        let query = view.active_view_transform().expect("query");
-        assert_eq!(query.order_by.len(), 1);
-        assert_eq!(query.order_by[0].column.ordinal, 1);
-        assert_eq!(query.filters.len(), 1);
-        assert_eq!(query.filters[0].column.ordinal, 1);
+        assert_eq!(view.visible_rows_vec(), rows(&[&["2", "3"]]));
         assert_eq!(view.visible_raw_rows_vec(), rows(&[&["2", "3"]]));
+    }
+    #[test]
+    fn failed_frozen_export_keeps_live_source_and_screen_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broken.ndjson");
+        std::fs::write(&path, "{\"id\":1}\ninvalid\n").expect("write");
+        let options = crate::ingest::OpenOptions {
+            format: crate::ingest::InputFormat::Ndjson,
+            lazy_threshold_bytes: 1,
+            schema_scan_bytes: 1,
+            ..crate::ingest::OpenOptions::default()
+        };
+        let opened = crate::ingest::JsonAdapter::ndjson()
+            .open(crate::ingest::source::InputSource::Path(path), &options)
+            .expect("open")
+            .into_implicit_table()
+            .expect("table");
+        let view = TableView::from_opened_table(opened, Viewport::new(1, 1)).expect("view");
+        let generation = view.source_generation();
+        let cursor = view.cursor();
+        let viewport = view.viewport();
+        let header = view.header().map(<[String]>::to_vec);
+        let rows = view.visible_rows_vec();
+        assert!(view
+            .prepare_projection(
+                crate::output::requirements(
+                    crate::output::OutputFormat::Jsonl,
+                    crate::output::ColorOutput::Never,
+                )
+                .expect("requirements"),
+                &crate::theme::default_theme(),
+            )
+            .is_err());
+        assert_eq!(view.source_generation(), generation);
+        assert_eq!(view.cursor(), cursor);
+        assert_eq!(view.viewport(), viewport);
+        assert_eq!(view.header().map(<[String]>::to_vec), header);
+        assert_eq!(view.visible_rows_vec(), rows);
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn frozen_export_replays_late_schema_on_next_live_progress() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("late.json");
+        std::fs::write(&path, r#"[{"id":1},{"id":2,"late":"text"}]"#).expect("write");
+        let options = crate::ingest::OpenOptions {
+            format: crate::ingest::InputFormat::Json,
+            schema_scan_bytes: 1,
+            lazy_threshold_bytes: 1,
+            ..crate::ingest::OpenOptions::default()
+        };
+        let opened = crate::ingest::JsonAdapter::json()
+            .open(crate::ingest::source::InputSource::Path(path), &options)
+            .expect("open")
+            .into_implicit_table()
+            .expect("table");
+        let mut view = TableView::from_opened_table(opened, Viewport::new(1, 1)).expect("view");
+        assert_eq!(view.header(), Some(&["id".to_owned()][..]));
+        let saved = crate::saved_views::parse_saved_view_yaml(
+            "name: late presentation\nfilenames: ['*']\nsource: {}\nview:\n  columns:\n    /late: {format: uppercase}\n",
+        )
+        .expect("saved");
+        view.install_saved_binding(saved.view.view, true);
+        let cursor = view.cursor();
+        let viewport = view.viewport();
+        let frozen = view
+            .prepare_projection(
+                crate::output::requirements(
+                    crate::output::OutputFormat::Jsonl,
+                    crate::output::ColorOutput::Never,
+                )
+                .expect("requirements"),
+                &crate::theme::default_theme(),
+            )
+            .expect("frozen");
+        assert_eq!(
+            frozen
+                .output
+                .header
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "late"]
+        );
+        assert_eq!(frozen.output.rows[1][1].text, "TEXT");
+        assert_eq!(view.header(), Some(&["id".to_owned()][..]));
+        assert_eq!(view.cursor(), cursor);
+        assert_eq!(view.viewport(), viewport);
+        let mut before = Vec::new();
+        crate::output::write_prepared(
+            crate::output::OutputFormat::Jsonl,
+            crate::output::ColorOutput::Never,
+            &frozen.output,
+            None,
+            &mut before,
+        )
+        .expect("serialize frozen output");
+        let repeated = view
+            .prepare_projection(
+                crate::output::requirements(
+                    crate::output::OutputFormat::Jsonl,
+                    crate::output::ColorOutput::Never,
+                )
+                .expect("requirements"),
+                &crate::theme::default_theme(),
+            )
+            .expect("repeated frozen export");
+        let mut repeated_output = Vec::new();
+        crate::output::write_prepared(
+            crate::output::OutputFormat::Jsonl,
+            crate::output::ColorOutput::Never,
+            &repeated.output,
+            None,
+            &mut repeated_output,
+        )
+        .expect("serialize repeated export");
+        assert_eq!(repeated_output, before);
+
+        view.ensure_source_indexed_through(2)
+            .expect("continue viewer");
+        assert_eq!(
+            view.header(),
+            Some(&["id".to_owned(), "late".to_owned()][..])
+        );
+        assert_eq!(
+            view.rendered_visible_row(1).as_deref(),
+            Some(&["2".to_owned(), "TEXT".to_owned()][..])
+        );
+        view.set_current_column_width(3);
+        let mut after = Vec::new();
+        crate::output::write_prepared(
+            crate::output::OutputFormat::Jsonl,
+            crate::output::ColorOutput::Never,
+            &frozen.output,
+            None,
+            &mut after,
+        )
+        .expect("serialize frozen output again");
+        assert_eq!(before, after);
     }
 }
