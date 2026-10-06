@@ -5,7 +5,7 @@ Define user-defined saved view configuration files, matching, validation, applic
 ## Requirements
 
 ### Requirement: Saved view discovery
-When compiled with the `saved-views` feature, the system SHALL discover user-defined saved view files from `$XDG_CONFIG_HOME/tview/views`, or `~/.config/tview/views` when `XDG_CONFIG_HOME` is unset, including files ending in `.yml` or `.yaml`.
+When compiled with the `saved-views` feature, the system SHALL discover user-defined saved view files from `$XDG_CONFIG_HOME/tview/views`, or `~/.config/tview/views` when `XDG_CONFIG_HOME` is unset, including files ending in `.yml` or `.yaml` recursively within view bundles. Canonical names SHALL remain filename stems across bundles, with deterministic duplicate precedence.
 
 #### Scenario: Discover views from config directory
 - **WHEN** a user opens a file and saved views exist under `~/.config/tview/views`
@@ -22,6 +22,14 @@ When compiled with the `saved-views` feature, the system SHALL discover user-def
 #### Scenario: Saved views feature disabled
 - **WHEN** the binary is compiled without the `saved-views` feature
 - **THEN** the system does not discover or apply saved views
+
+#### Scenario: Recursive bundle discovery
+- **WHEN** a valid saved view exists in a nested directory beneath the configured views directory
+- **THEN** it participates in normal forced-name and filename matching using its filename stem, without adding bundle prefixes or inheritance
+
+#### Scenario: Duplicate names across bundles
+- **WHEN** multiple bundles contain the same canonical filename-stem name under platform case rules
+- **THEN** `.yml` takes precedence over `.yaml`, otherwise the lexically first file path wins, and the conflict produces one non-fatal discovery warning
 
 ### Requirement: Saved view schema
 The system SHALL ship and document a schema for saved-view YAML with `name` and `filenames` at the document root, source-opening and source-query configuration under `source`, and source-independent presentation and local-operation configuration under `view`. `source` SHALL support `format`, `json_path`, `object_mode`, `table`, `schema_scan`, `limit`, `filters`, and `sort`. `view` SHALL support `locale`, `nulls`, `columns`, `filters`, and `sort`, including the existing column labels, visibility, type aliases, formatting, widths, alignment, conditional colors, numeric masks, and null-placement overrides.
@@ -97,7 +105,7 @@ The system SHALL match saved views against the opened input basename using exact
 - **THEN** the system matches or rejects it according to the platform filename case behavior
 
 ### Requirement: Saved view selection overrides
-When compiled with the `saved-views` feature, the system SHALL apply matching saved views automatically by default and SHALL provide CLI overrides to force a saved view by canonical name or disable saved views for the invocation.
+When compiled with the `saved-views` feature, the system SHALL apply matching saved views automatically by default and SHALL provide CLI overrides to force a saved view by canonical name or disable saved views for the invocation. Disabled saved views SHALL skip discovery, binding, and saved-view authoring. Forced missing selection SHALL fail before source opening.
 
 #### Scenario: Automatic view selection
 - **WHEN** a user opens an input whose basename matches a valid saved view and no saved view override flag is present
@@ -118,6 +126,14 @@ When compiled with the `saved-views` feature, the system SHALL apply matching sa
 #### Scenario: Missing forced view
 - **WHEN** a user runs `tview --view missing data.txt` and no saved view has that name
 - **THEN** the system reports a clear CLI error and does not start the viewer
+
+#### Scenario: Missing forced view does not open the source
+- **WHEN** a forced saved view is missing and the input source would otherwise be opened or queried
+- **THEN** selection fails before opening or querying that source and batch stdout remains empty
+
+#### Scenario: Disabled invocation does not inspect or author views
+- **WHEN** the user invokes `--no-view` with malformed saved files present
+- **THEN** no discovery warnings are produced, no saved settings are applied, and saved-view authoring and saving remain disabled
 
 ### Requirement: Saved source options
 A saved view SHALL apply source-opening and source-query options from `source` before constructing the active source result. Explicit CLI source options SHALL override matching saved values for that invocation.
@@ -155,7 +171,7 @@ A saved view SHALL apply source-opening and source-query options from `source` b
 - **THEN** the explicit CLI value takes precedence for that invocation
 
 ### Requirement: Column matching
-The system SHALL apply column configuration sparsely using stable canonical source identity where available, with compatible header-label matching for delimited sources and unambiguous fallback matching for structured sources.
+The system SHALL apply column configuration sparsely using stable canonical source identity where available, with compatible header-label matching for delimited sources and unambiguous fallback matching for structured sources. Saved view sort and filter references SHALL follow the same identity and ambiguity rules; an ambiguous structured label SHALL NOT fall back to delimited header matching.
 
 #### Scenario: Exact column key wins
 - **WHEN** `columns` contains both `count` and `*count` and a compatible delimited table has a `Count` header
@@ -181,8 +197,24 @@ The system SHALL apply column configuration sparsely using stable canonical sour
 - **WHEN** a saved view configures a column key that matches no loaded column after a complete schema scan
 - **THEN** the system ignores that column configuration and records a non-fatal warning
 
+#### Scenario: Ambiguous operation label is not guessed
+- **WHEN** a saved view sort or filter references a structured display label shared by multiple columns
+- **THEN** the operation is not applied to an arbitrary column and one non-fatal ambiguity warning recommends a canonical source key
+
+#### Scenario: Canonical operation reference wins
+- **WHEN** a saved sort or filter uses a canonical JSON pointer or relational occurrence key and rendered labels are ambiguous or overridden
+- **THEN** the operation binds to the identified source column without using the rendered label as identity
+
+#### Scenario: Existing unambiguous operation-header compatibility
+- **WHEN** a structured saved sort or filter uses a noncanonical case-insensitive or wildcard reference with no exact canonical or source-label match and no structured ambiguity
+- **THEN** the existing operation-header compatibility matching remains available rather than introducing new matching strictness
+
+#### Scenario: Source label survives presentation override
+- **WHEN** a structured column's rendered label is overridden and a saved operation references its unique original source display label
+- **THEN** the operation still binds through that source label, and the rendered override alone does not create a new operation-reference alias
+
 ### Requirement: Pending late-column configuration
-The system SHALL retain valid canonical column configuration that does not match the initial provisional schema until the schema becomes complete or the column is discovered.
+The system SHALL retain valid canonical column configuration and unresolved canonical view sort and filter references against a provisional schema until discovered or schema completion. Delayed binding SHALL preserve existing filter interpretation and numeric availability rules. Schema completion SHALL finalize missing references and invalid conditions with one non-fatal warning per affected item. A present numeric filter awaiting required profile preparation SHALL remain pending even after schema completion until normal profile preparation determines its definitive availability; it SHALL then be installed or ignored with one unavailable-operation warning, without indefinite retries.
 
 #### Scenario: Configured column arrives late
 - **WHEN** a saved view configures a canonical JSON pointer absent from the bounded initial scan and that pointer is discovered during later indexing
@@ -191,6 +223,30 @@ The system SHALL retain valid canonical column configuration that does not match
 #### Scenario: Configured column never arrives
 - **WHEN** schema discovery reaches the selected table's end without finding a pending canonical column
 - **THEN** the system records the normal non-fatal missing-column warning
+
+#### Scenario: Pending filter waits across provisional schema
+- **WHEN** a saved canonical filter column is absent during several provisional schema updates and later appears
+- **THEN** the filter remains pending without a premature missing-column warning, binds under normal filter rules when available, and filters the bounded source result without requesting replacement source rows
+
+#### Scenario: Deferred numeric filter remains temporarily unavailable
+- **WHEN** a pending saved numeric filter's column appears but its numeric profile is not yet available under existing filter rules
+- **THEN** the filter can remain pending until normal preparation supplies the required profile, without changing numeric comparison semantics or reporting it as a missing column
+
+#### Scenario: Interactive numeric availability is finalized
+- **WHEN** schema completion and the TUI's normal column-inference step provide the current numeric profile for a present pending filter
+- **THEN** that profile outcome is definitive for interactive binding: the filter installs or produces one unavailable-operation warning and retires, without requiring an extra scan solely to bind it
+
+#### Scenario: Completion without appended columns
+- **WHEN** schema completion arrives without adding any columns and saved columns or operations are still pending
+- **THEN** missing references and invalid conditions are finalized with their normal diagnostic once, while present numeric filters awaiting profile preparation retain that dependency
+
+#### Scenario: Missing and invalid items are distinguished
+- **WHEN** schema completion and required normal profile preparation find both an absent canonical filter column and a present column whose saved filter cannot be applied under normal filter rules
+- **THEN** diagnostics distinguish the missing reference from the invalid or definitively unavailable operation and neither item remains indefinitely pending
+
+#### Scenario: Live operation edits supersede pending saved intent
+- **WHEN** the user edits or clears a seeded sort or filter while its saved late-column intent is still pending
+- **THEN** later schema progress does not restore the superseded saved intent or overwrite the live edit, while untouched pending saved settings remain eligible to resolve
 
 ### Requirement: Column display-label override
 A saved view SHALL allow a column to override its rendered display label without changing source identity or raw data.
@@ -401,7 +457,7 @@ The system SHALL save the current runtime view configuration to `config_dir/tvie
 - **THEN** saved view authoring and saving are disabled for that session
 
 ### Requirement: Non-fatal saved view failures
-The system SHALL treat saved view loading, validation, matching, and application failures as non-fatal unless the user explicitly requests a missing view through `--view`.
+The system SHALL treat saved view loading, validation, matching, and application failures as non-fatal unless the user explicitly requests a missing view through `--view`. Initial and delayed binding SHALL use consistent diagnostics, delivered once per affected item through existing TUI warning and stderr routes, never stdout. This SHALL NOT suppress source-opening, query, ingestion, or output failures.
 
 #### Scenario: Bad view does not block data
 - **WHEN** one or more saved view files are malformed
@@ -410,6 +466,22 @@ The system SHALL treat saved view loading, validation, matching, and application
 #### Scenario: No matching view
 - **WHEN** no saved view matches the opened input
 - **THEN** the system opens the input with existing default behavior and does not report an error
+
+#### Scenario: Early and late warnings agree
+- **WHEN** the same saved item fails binding in an initially complete schema or after provisional schema completion
+- **THEN** both paths report the same reason and item identity once without preventing other valid saved settings from applying
+
+#### Scenario: Batch preparation surfaces late warnings
+- **WHEN** direct output discovers missing or invalid saved binding items during final traversal or required preview preparation
+- **THEN** all such warnings are emitted once on stderr before output emission and never inserted into table, JSON, or JSONL stdout
+
+#### Scenario: Interactive warnings are not overwritten
+- **WHEN** one schema-completion event finalizes both missing column metadata and missing or invalid saved operations
+- **THEN** all warnings are retained for once-only stderr delivery, the existing interactive message footer shows the first new warning and an additional-warning count during the session, and later polling does not repeat them
+
+#### Scenario: Binding does not hide data errors
+- **WHEN** source opening or required output preparation fails while saved settings are being applied
+- **THEN** normal error handling remains in force and no partial batch stdout is emitted
 
 ### Requirement: Column conditional color metadata
 The system SHALL allow saved view column definitions to include conditional color formatting rules that apply to rendered cell styles without changing raw or rendered cell values.
@@ -668,7 +740,7 @@ Saved-view matching and serialization SHALL support the safe textual identity of
 - **THEN** generated YAML, diagnostics, and query artifacts omit or redact that component
 
 ### Requirement: Saved native query serialization
-Saved-view serialization SHALL persist source-native input configuration separately from derived query provenance.
+Saved-view serialization SHALL persist source-native input configuration separately from derived query provenance, using the committed source configuration of the last successfully activated result rather than draft or pending settings.
 
 #### Scenario: Source operations around native query
 - **WHEN** a native base query has source filters, source sort, or source limit
@@ -681,3 +753,92 @@ Saved-view serialization SHALL persist source-native input configuration separat
 #### Scenario: Derived SQLite SQL is excluded
 - **WHEN** SQLite query provenance includes an outer bounded query
 - **THEN** generated YAML does not replace the configured base query with the derived SQL
+
+#### Scenario: Rejected SQLite native query is not saved
+- **WHEN** `SELECT name AS label FROM events ORDER BY id` is committed, replacement with `SELECT missing AS label FROM events ORDER BY id` fails, and the user saves the current view
+- **THEN** YAML persists `SELECT name AS label FROM events ORDER BY id` and the committed source operations, not the rejected text
+- **AND** reopening that saved view succeeds against the unchanged fixture and returns the successful query's rows
+
+#### Scenario: Save while replacement is pending
+- **WHEN** a new source query is pending and saved-view YAML is generated
+- **THEN** its entire `source` section describes the last successfully activated result without waiting for, applying, or mixing in the pending request
+- **AND** its `view` section describes current successfully applied local settings over that active result
+
+#### Scenario: Save after loading or reconstruction failure
+- **WHEN** source execution succeeds but result loading or view reconstruction fails and the current view is saved
+- **THEN** the saved source configuration remains the prior committed configuration and no candidate settings are serialized
+
+### Requirement: Successful source configuration serialization
+Saved-view authoring SHALL derive its entire `source` section from one committed source configuration. It SHALL preserve effective opening choices, generated relation or native base-query selection, source operations using durable active-result column keys, and effective limits in the existing YAML structure. Local view operations SHALL remain under `view`; transport secrets SHALL remain excluded.
+
+#### Scenario: Preserve opening-only settings
+- **WHEN** a result was opened with effective format, JSON path, resolved object mode, schema-scan policy, or a selected relation and then successfully replaced
+- **THEN** generated YAML retains the applicable opening settings required to reopen that committed result under the existing serialization rules
+
+#### Scenario: Save generated SQLite or Elasticsearch query
+- **WHEN** a committed source result comes from a selected relation without user-supplied native query text
+- **THEN** YAML persists the effective format, resolved `source.table`, and structured source operations
+- **AND** it does not convert adapter-generated base or composed native text into `source.query`
+
+#### Scenario: Save successfully changed native selection
+- **WHEN** an existing generated relation query is replaced successfully with a user-supplied native base query
+- **THEN** YAML writes that configured base under `source.query`, omits the mutually exclusive `source.table`, and preserves opening settings and structured operations
+
+#### Scenario: Serialize adapter-remapped source operands
+- **WHEN** successful replacement changes the source generation or column positions and its source filters or sorting are remapped by the adapter
+- **THEN** YAML uses durable keys resolved from the committed active result rather than rejected draft IDs, stale ordinals, or generated placeholder column names
+
+#### Scenario: Preserve finite source limit
+- **WHEN** the committed source result uses a finite limit and pending or failed replacement requests a different limit
+- **THEN** YAML retains the committed finite limit and reopening applies that same source-result bound
+
+#### Scenario: Preserve existing unbounded file opening
+- **WHEN** a committed file source was opened without a finite limit and uses the existing unbounded sentinel internally
+- **THEN** generated YAML omits the limit under the existing file-source rule and replay remains unbounded
+- **AND** native-query results retain their finite committed bounds without introducing extreme-integer unbounded serialization
+
+#### Scenario: Source and view operations stay isolated
+- **WHEN** the active source has source filters and sorting and the current local view has different filters and sorting
+- **THEN** YAML serializes each layer under its corresponding section and reopening does not expand the source result to compensate for view filtering
+
+### Requirement: Invocation-consistent saved-view snapshot
+The system SHALL use one selected validated saved-view snapshot for source configuration and presentation binding within an invocation. Changes to saved-view files after selection SHALL NOT alter that invocation's settings. A fresh invocation SHALL discover current files; data reload SHALL preserve active runtime view settings rather than reselecting or rereading saved-view YAML.
+
+#### Scenario: Saved file changes during source opening
+- **WHEN** a selected saved-view file is changed or removed after selection but before source opening finishes
+- **THEN** source options and presentation settings both come from the originally selected validated contents, and the selected canonical name and authoring target remain consistent
+
+#### Scenario: Fresh invocation observes edited files
+- **WHEN** a saved-view file changes after an earlier invocation selected it and a new invocation opens the input
+- **THEN** the new invocation discovers, validates, and selects the current files without reusing a process-wide cached snapshot
+
+#### Scenario: Reload preserves live settings
+- **WHEN** the user changes view sorting, filters, or presentation in the TUI, edits the saved YAML externally, and reloads data
+- **THEN** reload restores the active runtime view settings under existing identity-restoration rules without applying the external YAML edits
+
+#### Scenario: CLI source overrides do not replace presentation
+- **WHEN** explicit CLI source options override values in the selected snapshot
+- **THEN** the CLI source values are applied before opening, and presentation still binds from that same snapshot against the resulting schema
+
+### Requirement: Equivalent initial and delayed saved operation binding
+The system SHALL interpret saved view column metadata, ordered sorts, and filters equivalently for initially available and later discovered canonical columns. Metadata SHALL be available before type-aware sorting, null-placement resolution, and raw/rendered filtering. Successful delayed binding SHALL NOT duplicate active filters or reset unrelated live view settings. `--sorted false` SHALL disable immediate and delayed saved view sorts only.
+
+#### Scenario: Initial and late canonical columns agree
+- **WHEN** equivalent source rows and saved canonical column metadata, sort keys, and filters are supplied once with complete schema and once with provisional schema followed by discovery of the same columns
+- **THEN** after equivalent schema and data are available the visible rows, sort precedence, formatting, visibility, type-aware comparisons, and null placement agree
+
+#### Scenario: Late type and null override precede sorting
+- **WHEN** a pending canonical column arrives with saved type metadata, a column null-placement override, and a type-aware saved sort
+- **THEN** sorting uses that column's saved type and null override rather than pre-binding inference or the view default
+
+#### Scenario: Repeated schema progress is idempotent
+- **WHEN** further indexing or repeated schema-completion notifications occur after a saved filter successfully binds
+- **THEN** the filter remains active exactly once and unrelated runtime settings are not reapplied from the snapshot
+
+#### Scenario: Saved sort suppression leaves source ordering intact
+- **WHEN** direct table output uses `--sorted false` and the selected saved view defines source ordering, immediate or pending view sorts, filters, and formatting
+- **THEN** no saved view sort activates or causes scanning, source ordering remains intact, and filters and presentation remain active
+
+#### Scenario: Raw and rendered filter semantics remain compatible
+- **WHEN** an initially available or late canonical column has display formatting and a saved text or regex filter
+- **THEN** the filter retains existing matching against raw and rendered values, and binding does not mutate raw values or reinterpret a view filter as a source predicate

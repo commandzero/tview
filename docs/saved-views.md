@@ -2,7 +2,7 @@
 type: Guide
 title: Saved views
 description: Save source options, column formatting, filters, sorting, and colors.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # Saved views
@@ -29,6 +29,12 @@ view by file stem, or `--no-view` to disable loading and saving for that run.
 tview data.csv --view my-view
 tview data.csv --no-view
 ```
+
+Tview selects and validates a view once per invocation. Its source settings
+and column presentation come from that same snapshot, even if the YAML changes
+while the source opens. A new invocation discovers current files. `--no-view`
+skips discovery and saved-view authoring; a missing forced `--view` fails before
+opening the source.
 
 ## Column settings
 
@@ -80,8 +86,12 @@ view:
       label: Repository
 ```
 
-Column keys match headers case-insensitively. Exact keys win over wildcard keys;
-wildcard ties use the most literal characters, then lexical order. Supported
+Column keys match headers case-insensitively for delimited input. Exact keys
+win over wildcard keys; wildcard ties use the most literal characters, then
+lexical order. Metadata for a column, including its type and null placement,
+binds before saved sorts and filters. The same rule applies when structured
+columns are discovered later, so a late high-priority sort retains its order
+and a saved filter does not get installed twice. Supported
 type aliases are `string`, `text`, `date`, `ip`, `number`, `float`, `integer`,
 `semver`, `boolean`, `char`, `bit`, and `word`. Formats include `plain`,
 `locale`, `mask`, `uppercase`, `lowercase`, `char`, `bit`, and `word`. Number
@@ -94,14 +104,30 @@ filters. Truncation applies after those prefix markers.
 ## Source settings
 
 Tview applies `source` settings before opening the table. Formatting and local
-operations belong under `view`. Explicit CLI options override the saved view,
-which overrides defaults. Supplying `--schema-scan default` therefore overrides
-a saved `source.schema_scan: full` for one invocation. For object tables, Tview
-saves `source.object_mode` as `record` or `entries` so later detection changes
-do not change the rows. Non-object tables omit it. Native sources may persist
-either `source.table` or `source.query`, never both. For Elasticsearch,
-`source.query` stores only the configured ES|QL base text; Tview stores filters
-and sorting separately and omits the extra-row limit probe.
+operations belong under `view`. Explicit CLI source options override the saved
+view, which overrides defaults; the selected view still supplies presentation
+against the resulting schema. Supplying `--schema-scan default` therefore
+overrides a saved `source.schema_scan: full` for one invocation. For object
+tables, Tview saves `source.object_mode` as `record` or `entries` so later
+detection changes do not change the rows. Non-object tables omit it.
+
+Saving uses the complete source configuration of the last successfully
+activated result. It retains applicable opening choices, the selected relation
+or configured native base query, structured source operations, and its effective
+finite limit. Draft, pending, failed, or superseded requests do not change that
+source section; currently applied local settings still belong under `view`.
+Native sources persist either `source.table` or `source.query`, never both.
+Generated SQL or ES|QL and the extra-row limit probe are not saved as a
+user-supplied base query. For a file source opened without a finite limit, the
+limit remains omitted. Local filters do not fetch replacement source rows.
+
+Reload reopens the committed source configuration and supersedes pending work.
+It keeps compatible live view settings rather than rereading YAML or resetting
+the view to its selected snapshot. Column settings follow unambiguous compatible
+source identities, not column positions. Stable adapter-proven row identities
+can preserve cursor and marks across a compatible replacement; otherwise
+row-bound state resets. Reloading stdin remains a no-op; a reload error ends
+the interactive session.
 
 For delimited, JSON, and NDJSON sources, saved source filters stream decoded
 logical records before the source limit. Use `column: "*"` for a grep-style
@@ -117,16 +143,29 @@ duplicate because it cannot identify one column.
 
 Structured column configuration should use exact, case-sensitive canonical JSON
 Pointers such as `/_source/user/email`; keyed-object member names use `@key`,
-regardless of whether its display label is `name` or `_key`. An unambiguous
-compact display label is accepted as a fallback. A column can set `label`
-without changing its canonical identity or raw data. View-level and per-column
-`nulls: first|last` control direction-independent sort placement, with the
-column policy winning over the view policy and `last` as the built-in default.
+regardless of whether its display label is `name` or `_key`. Unambiguous source
+labels remain a fallback; an ambiguous structured label never selects an
+arbitrary column or operation. Missing canonical references remain pending while
+the schema is provisional. When schema discovery completes, missing or ambiguous
+references and invalid operations produce non-fatal, once-only warnings in the
+TUI and on stderr, not in batch stdout. A present numeric filter can still await
+the required numeric profile; definitive unavailability is reported as an
+unavailable operation, not as a missing column. Local edits supersede pending
+saved sort/filter intent; `--sorted false` suppresses saved view sorts, including
+late sorts, but not source order, view filters, or formatting. A column can set
+`label` without changing its canonical identity or raw data. View-level and
+per-column `nulls: first|last` control direction-independent sort placement,
+with the column policy winning over the view policy and `last` as the built-in
+default.
 
 ## Conditional colors
 
-Column color rules run in order. The first match sets the cell style. Colors do
-not change values, sorting, filtering, search, copying, or popups.
+Column color rules run in order; the first matching rule selects the foreground.
+Match and range rules, fixed and automatic gradients, and identifier colors use
+the same configured rules in the TUI and colored table output. No match keeps
+the theme's ordinary cell foreground. YAML retains configured color strings,
+not computed gradients, identifier indexes, or terminal colors. Colors do not
+change values, sorting, filtering, search, copying, or popups.
 
 ```yaml
 view:
@@ -183,12 +222,24 @@ across families before advancing shades. The darkest shade matches the family's
 ANSI dark/dim foreground color or a brighter value, so it is never darker than
 that color.
 
+Automatic gradients and identifiers use the applicable complete-result profile
+when rendering the complete result, not only visible screen rows. In a table
+preview, their profile uses emitted rows alone: rejected, lookahead, and omitted
+rows do not change emitted foregrounds. The complete profile may use resident
+rendered identifiers or exact store-backed raw identifiers, depending on the
+source path; it does not broaden the source-result limit. Plain table, JSON,
+and JSONL output do not request color-only profiling.
+
 ## Saving a view
 
 Press `v` to inspect the generated YAML. In that modal, press `s` to save it to
 the loaded view file, or to a placeholder file named from the current input with
 only the last extension replaced by `.yml`. Existing files ask for `y`/`n`
 confirmation. Saves are atomic and create the views directory as needed.
+
+While a source replacement is pending or after one fails, saving keeps the
+last successfully activated source configuration and the current applied local
+view. It does not save the rejected query or mix source settings across results.
 
 Use the [view schema](../schemas/view.schema.json) for editor validation. See
 the [conditional-colors example](../examples/data/config/views/conditional-colors.yml)

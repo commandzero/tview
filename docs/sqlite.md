@@ -2,7 +2,7 @@
 type: Guide
 title: SQLite sources
 description: Read-only database browsing, table selection, and source queries.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # SQLite sources
@@ -33,6 +33,15 @@ replacements.
 Press `u` for Source Configuration to stage a query's limit, filters, and sort.
 Press `V` for View Configuration or `i` for the current column's settings. The
 `f`/`F` and sort keys affect the local view only.
+
+Source Configuration holds a request until the replacement result has loaded
+and its view has been rebuilt. Only then does it become the committed source
+configuration. A failed request leaves the previous rows and committed query
+available; saving a view uses that successful query, not the rejected SQL.
+Reload (`r`) reopens the committed configuration and supersedes pending requests.
+It keeps compatible column settings and local view operations by source identity,
+not by the position of a renamed or removed column. A reload error still ends
+the interactive session.
 
 ## Custom SQL
 

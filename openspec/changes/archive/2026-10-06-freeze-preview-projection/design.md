@@ -4,7 +4,7 @@
 
 See [proposal.md](proposal.md) for motivation and [the delta](specs/non-interactive-output/spec.md) for behavior. Current `lib::prepare_app` selects a one-row preview viewport, toggles `defer_preview_preparation`, applies saved settings, and later invokes `TableView::prepare_preview`; the output writer then disables ordinary complete preparation. Inside selection, `TableView` is cloned/restored around prefix and rejected-schema checkpoints and finally stripped of its stores. Guards also affect query application, numeric filter acceptance, color metadata, and exact reductions [1–3]. Merely moving this method would preserve the coupling.
 
-`TableDefinition`/`TableStore`, `PreviewSourceStore`, sequential delimited/JSON stores, `OutputAdapter`, and `PreparedOutput`/`PreparedRows` are existing seams [3–6]. JSON provides explicit field presence; delimited presence retains established initial header width. `RowCount` exactness, partial-result metadata, and source limits cannot be inferred from selected display strings. The archived fast-preview design deliberately permits whole-result local sorts and bounded eager native responses [7]. Use the [domain glossary](../../../CONTEXT.md), including committed source configuration, selected saved-view snapshot, and frozen preview projection.
+`TableDefinition`/`TableStore`, `PreviewSourceStore`, sequential delimited/JSON stores, `OutputAdapter`, and `PreparedOutput`/`PreparedRows` are existing seams [3–6]. JSON provides explicit field presence; delimited presence retains established initial header width. `RowCount` exactness, partial-result metadata, and source limits cannot be inferred from selected display strings. The archived fast-preview design deliberately permits whole-result local sorts and bounded eager native responses [7]. Use the [domain glossary](../../../../CONTEXT.md), including committed source configuration, selected saved-view snapshot, and frozen preview projection.
 
 ## Goals / Non-Goals
 
@@ -133,11 +133,11 @@ After implementation, run focused interface and integration tests, the repositor
 
 ## References
 
-1. [Current non-interactive output contract](../../specs/non-interactive-output/spec.md), modular output and table preview preparation requirements.
-2. [Startup and output orchestration](../../../src/lib.rs), `run` and `prepare_app`.
-3. [Current viewer preparation and guards](../../../src/view/mod.rs), `prepare_preview`, query application, numeric filters, and color reductions.
-4. [Output seams](../../../src/output.rs), `PreparedOutput`, `PreparedRows`, and output writers.
-5. [Store interface](../../../src/table/mod.rs) and [source-filtered preview store](../../../src/table/preview.rs).
-6. [Sequential delimited preview](../../../src/ingest/delimited/preview.rs) and [sequential JSON preview](../../../src/ingest/json/preview.rs).
-7. [Archived fast-preview design](../archive/2026-09-13-fast-table-preview/design.md).
-8. [Consumer-visible preview regressions](../../../tests/non_interactive.rs) and [contributor guide](../../../docs/contributing.md).
+1. [Current non-interactive output contract](../../../specs/non-interactive-output/spec.md), modular output and table preview preparation requirements.
+2. [Startup and output orchestration](../../../../src/lib.rs), `run` and `prepare_app`.
+3. [Current viewer preparation and guards](../../../../src/view/mod.rs), `prepare_preview`, query application, numeric filters, and color reductions.
+4. [Output seams](../../../../src/output.rs), `PreparedOutput`, `PreparedRows`, and output writers.
+5. [Store interface](../../../../src/table/mod.rs) and [source-filtered preview store](../../../../src/table/preview.rs).
+6. [Sequential delimited preview](../../../../src/ingest/delimited/preview.rs) and [sequential JSON preview](../../../../src/ingest/json/preview.rs).
+7. [Archived fast-preview design](../2026-09-13-fast-table-preview/design.md).
+8. [Consumer-visible preview regressions](../../../../tests/non_interactive.rs) and [contributor guide](../../../../docs/contributing.md).

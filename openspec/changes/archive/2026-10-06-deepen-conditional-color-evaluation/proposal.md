@@ -33,6 +33,6 @@ The existing `saved-views` conditional-rule requirements already specify rule se
 
 ## References
 
-1. [View conditional-color selection/cache](../../../src/view/mod.rs), [theme decoding/resolution](../../../src/theme.rs), [UI consumer](../../../src/ui/mod.rs), and [output consumer](../../../src/output.rs) — inspected sources establish the private string round trip; performance impact has not been measured.
-2. [Current color-theme requirements](../../specs/color-themes/spec.md) and [saved-view requirements](../../specs/saved-views/spec.md) — compatibility contracts.
-3. [Archived color-theme design](../archive/2026-07-05-add-color-themes/design.md) — data-specific rules remain with columns; theme styles remain a projection; no live reload.
+1. [View conditional-color selection/cache](../../../../src/view/mod.rs), [theme decoding/resolution](../../../../src/theme.rs), [UI consumer](../../../../src/ui/mod.rs), and [output consumer](../../../../src/output.rs) — inspected sources establish the private string round trip; performance impact has not been measured.
+2. [Current color-theme requirements](../../../specs/color-themes/spec.md) and [saved-view requirements](../../../specs/saved-views/spec.md) — compatibility contracts.
+3. [Archived color-theme design](../2026-07-05-add-color-themes/design.md) — data-specific rules remain with columns; theme styles remain a projection; no live reload.

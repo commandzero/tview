@@ -2,7 +2,7 @@
 type: Guide
 title: Color themes
 description: Theme files, palettes, and terminal color modes.
-generated: { by: codex/gpt-6, at: 2026-09-12T17:14:16Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # Color themes
@@ -106,6 +106,23 @@ styles:
 Named 16-color values use tview's built-in cmdzro base palette; in truecolor
 mode they resolve to those RGB values, while `mode: ansi16` emits ANSI colors
 for the terminal palette.
+
+Conditional colors in a saved view select a foreground using ordered match,
+range, fixed-gradient, automatic-gradient, or identifier rules. The TUI and
+colored table output resolve those rules against the loaded theme in the same
+terminal color mode. A palette alias takes precedence over a literal color
+name, even when both have the same spelling; configured alias names retain
+punctuation and Unicode. ANSI-16, ANSI-256, and truecolor modes use their
+supported deterministic fallbacks. Hex alpha does not blend with the terminal
+background. Saved YAML retains its configured color strings.
+
+Complete rendering profiles the applicable complete result, including rows
+outside the current viewport; a table preview profiles emitted rows only.
+Omitted and lookahead rows cannot change the preview's automatic gradient or
+identifier foregrounds. Selecting a TUI cell keeps its background and
+modifiers; only a matching search substring takes search foreground and
+modifiers. Plain table, JSON, and JSONL output do not profile colors solely
+for conditional rules.
 
 See the [complete sample theme](../examples/data/config/themes/cmdzro.yml) and [theme
 schema](../schemas/theme.schema.json). For per-column rules, see [conditional

@@ -2,7 +2,7 @@
 type: Guide
 title: CLI output and compatibility
 description: Output schemas, exit codes, stream behavior, and compatibility rules.
-generated: { by: codex/gpt-6, at: 2026-09-13T19:15:03Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
 ---
 
 # CLI output and compatibility
@@ -42,6 +42,12 @@ visible columns. With stdin as the source, Tview reads keyboard input and draws
 the UI through the controlling terminal. It keeps reading finite stdin in the
 background and waits for EOF before exporting, so the export includes late rows
 and columns. Use `tview --version` to print the package version.
+
+For interactive exports, a pending source replacement must finish activating
+before output begins. If the latest requested revision fails during query
+execution, result loading, or view reconstruction, the earlier visible result
+is not exported: stderr reports the error, stdout stays empty, and Tview exits
+with code 1. A newer successful activation supersedes older failures.
 
 ## Text tables
 
@@ -104,25 +110,39 @@ These options apply only to direct table output, including automatic table
 output when stdout is redirected. Tview rejects explicit use with interactive
 mode, interactive export, JSON, or JSONL.
 
-A truncated preview ends with `95 more rows...` when the exact number of omitted
-filtered rows is already known. Otherwise it ends with `more rows...`. Tview
-looks for one additional matching row but does not scan the rest just to count
-it. The summary excludes rows outside the source-query limit.
+A truncated preview ends with `95 more rows...` only when the exact number of
+omitted filtered rows is already known. Otherwise one additional matching row
+confirms `more rows...`; an exact count of unfiltered rows is not enough if
+local filters are active. A partial native result retains unknown remainder
+when omitted rows exist. The summary excludes rows outside the source-query
+limit. If neither an additional match nor effective end of input is known,
+Tview waits for that evidence rather than claiming completion.
 
-Preview widths, inferred types, columns, and automatic color gradients use the
-selected rows. Wider values and new fields in omitted rows do not change the
-preview. Explicit widths and fixed color rules still apply. A requested full
-schema scan still runs; use `--schema-scan default` to override one in a saved
-view.
+Preparation selects the effective source result, applies local filters, then
+enabled local sorting, and freezes a complete or prefix projection before
+serialization. Output adapters only read that projection; they do not resume
+ingestion or change the viewer's settings, stores, or viewport. Default-scan
+preview widths, inferred types, columns, and automatic color gradients use the
+emitted rows, not rejected, omitted, or lookahead rows. Explicit widths and
+fixed color rules still apply. A requested full schema scan traverses the
+required active result even if the initial schema appears complete. It includes
+fields present in accepted rows beyond the emitted prefix, but not fields
+found only in rejected rows. Explicit null or empty structured fields still
+count as present; empty display strings do not prove field presence. Use
+`--schema-scan default` to override a saved full-scan request.
 
-Saved sorting can require reading the full result. Selective filters can also
-require a long scan to find enough matches. SQLite and Elasticsearch keep their
-native query limits and may fetch a bounded response before rendering.
+Saved sorting requires the exact sorted result before choosing top rows.
+An active or pending numeric view filter needs whole-active-result numeric
+profiling before selecting rows, even for a short preview. Selective filters,
+late columns, and locating nested data can also require long scans. SQLite
+and Elasticsearch keep their native query limits and may fetch a bounded
+response before rendering; local filters do not trigger refill queries.
 
-Stdin previews exit once enough rows and lookahead are available, even if the
-producer has not closed its pipe. The producer may receive a broken pipe.
-Previews do not validate unread trailing content. Errors encountered while
-preparing the selected rows or lookahead leave stdout empty.
+Unsorted default-scan stdin previews exit once enough matching rows and
+lookahead are available, even if the producer has not closed its pipe. The
+producer may receive a broken pipe. Previews do not validate unread trailing
+content. Errors in required prefix, lookahead, binding, or profile preparation
+leave stdout empty.
 
 ## JSON and JSONL
 
@@ -175,7 +195,7 @@ during serialization can leave truncated JSON or JSONL; writes are not atomic.
 Complete exports wait for source preparation and late schema discovery before
 writing. Table previews use the bounded preparation described above. Complete
 exports from stdin wait for EOF and can materialize the entire input. Some
-sorts, filters, and exports can require full materialization even when initial
+sorts, filters, and exports require full materialization even when initial
 viewing was incremental. JSONL framing does not make ingestion bounded-memory.
 Remote source limits and timeouts remain enforced.
 

@@ -136,8 +136,8 @@ Remove eager mutation in Source Configuration Apply, independently assembled sav
 
 ## References
 
-1. [Domain vocabulary](../../../CONTEXT.md) and [proposal](proposal.md).
-2. [Source application, save, and reload](../../../src/lib.rs): `handle_source_config_key`, `handle_saved_view_key`, and `App::reload`; [view activation, restoration, and serialization](../../../src/view/mod.rs): `request_source_query`, `poll_source_query`, `restore_view_settings_from`, and `to_saved_view_yaml`.
-3. [Revision coordinator](../../../src/table/query.rs), [typed result/store contract](../../../src/table/mod.rs), and [opening settings](../../../src/ingest/options.rs).
-4. [Elasticsearch native-result design](../archive/2026-09-06-add-elasticsearch-source/design.md), [SQLite design](../archive/2026-07-26-add-turso-sqlite-support/design.md), [saved-view design](../archive/2026-06-23-add-saved-views/design.md), and [interface-updates proposal](../interface-updates/proposal.md).
+1. [Domain vocabulary](../../../../CONTEXT.md) and [proposal](proposal.md).
+2. [Source application, save, and reload](../../../../src/lib.rs): `handle_source_config_key`, `handle_saved_view_key`, and `App::reload`; [view activation, restoration, and serialization](../../../../src/view/mod.rs): `request_source_query`, `poll_source_query`, `restore_view_settings_from`, and `to_saved_view_yaml`.
+3. [Revision coordinator](../../../../src/table/query.rs), [typed result/store contract](../../../../src/table/mod.rs), and [opening settings](../../../../src/ingest/options.rs).
+4. [Elasticsearch native-result design](../2026-09-06-add-elasticsearch-source/design.md), [SQLite design](../2026-07-26-add-turso-sqlite-support/design.md), [saved-view design](../2026-06-23-add-saved-views/design.md), and [interface-updates proposal](../../interface-updates/proposal.md).
 5. [Source-model delta](specs/table-source-model/spec.md), [saved-view delta](specs/saved-views/spec.md), and [latest-export delta](specs/non-interactive-output/spec.md).

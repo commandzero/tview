@@ -2,7 +2,7 @@
 
 ## Context
 
-See [proposal.md](proposal.md#why) for motivation and the [color-themes delta](specs/color-themes/spec.md) for acceptance behavior. The glossary in [CONTEXT.md](../../../CONTEXT.md) distinguishes the active source result, view transform, selected saved-view snapshot, frozen preview projection, and conditional color.
+See [proposal.md](proposal.md#why) for motivation and the [color-themes delta](specs/color-themes/spec.md) for acceptance behavior. The glossary in [CONTEXT.md](../../../../CONTEXT.md) distinguishes the active source result, view transform, selected saved-view snapshot, frozen preview projection, and conditional color.
 
 Today `TableView` stores `ConditionalColorRule` lists and `ColumnColorMetadata`. The latter contains extrema, rendered-identifier maps whose values are encoded strings, and vectors of encoded gradient buckets. `conditional_color_for_source_cell` selects a rule, including its own automatic-gradient arithmetic; `ConditionalColorRule::color_ref_for` repeats that arithmetic. UI rendering reads `VisibleCellStyleContext.conditional_color`; output calls `output_conditional_color`, which also renders a value already rendered by the output path. Both then call `ResolvedTheme::conditional_style`, which decodes the private transport, allocates color lists, walks aliases, interpolates, and converts terminal colors.
 
@@ -155,10 +155,10 @@ There are no unresolved behavior or ownership decisions. The specific local allo
 
 ## References
 
-1. [Color-themes main spec](../../specs/color-themes/spec.md) and [saved-view main spec](../../specs/saved-views/spec.md) — existing configuration, rule, family, and selection contracts.
-2. [Archived theme design](../archive/2026-07-05-add-color-themes/design.md) — foreground-only rules, numeric/family semantics, terminal fallback, no live reload.
-3. [View color selection and cache](../../../src/view/mod.rs), [theme resolution](../../../src/theme.rs), [UI consumer](../../../src/ui/mod.rs), and [output consumer](../../../src/output.rs) — inspected runtime ownership and private transport.
-4. [Shared numeric scalar parser](../../../src/ops/sort.rs) and [typed column reductions](../../../src/table/mod.rs) — reusable parsing/profile seams, not replacements.
-5. [Non-interactive regression coverage](../../../tests/non_interactive.rs) — emitted-preview profile isolation is covered by existing tests; those tests were not run during planning.
-6. [Contributor guide](../../../docs/contributing.md), [theme guide](../../../docs/themes.md), and [saved-view guide](../../../docs/saved-views.md) — feature validation and existing documentation targets.
-7. [Interface-updates proposal](../interface-updates/proposal.md) — editor work is separate and unimplemented.
+1. [Color-themes main spec](../../../specs/color-themes/spec.md) and [saved-view main spec](../../../specs/saved-views/spec.md) — existing configuration, rule, family, and selection contracts.
+2. [Archived theme design](../2026-07-05-add-color-themes/design.md) — foreground-only rules, numeric/family semantics, terminal fallback, no live reload.
+3. [View color selection and cache](../../../../src/view/mod.rs), [theme resolution](../../../../src/theme.rs), [UI consumer](../../../../src/ui/mod.rs), and [output consumer](../../../../src/output.rs) — inspected runtime ownership and private transport.
+4. [Shared numeric scalar parser](../../../../src/ops/sort.rs) and [typed column reductions](../../../../src/table/mod.rs) — reusable parsing/profile seams, not replacements.
+5. [Non-interactive regression coverage](../../../../tests/non_interactive.rs) — emitted-preview profile isolation is covered by existing tests; those tests were not run during planning.
+6. [Contributor guide](../../../../docs/contributing.md), [theme guide](../../../../docs/themes.md), and [saved-view guide](../../../../docs/saved-views.md) — feature validation and existing documentation targets.
+7. [Interface-updates proposal](../../interface-updates/proposal.md) — editor work is separate and unimplemented.

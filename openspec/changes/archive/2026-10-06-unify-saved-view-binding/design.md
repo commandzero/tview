@@ -2,7 +2,7 @@
 
 ## Context
 
-See [proposal.md](proposal.md) for motivation and [the saved-views delta](specs/saved-views/spec.md) for the behavior contract. The shared [domain vocabulary](../../../CONTEXT.md) names the selected saved-view snapshot separately from committed source configuration.
+See [proposal.md](proposal.md) for motivation and [the saved-views delta](specs/saved-views/spec.md) for the behavior contract. The shared [domain vocabulary](../../../../CONTEXT.md) names the selected saved-view snapshot separately from committed source configuration.
 
 `prepare_app` obtains source overrides through `selected_saved_view_source_options`, opens the source, and calls `apply_saved_view`, which independently discovers and selects again. Discovery recursively parses bundles and returns borrowed selection over candidate files. The second pass also constructs placeholder authoring state and warnings. Initial operation binding in `lib.rs` resolves references and converts sort/filter fields; `TableView::apply_pending_saved_operations` repeats those conversions after schema deltas. Initial application silently discards filter errors, delayed application retains them and can mislabel them as missing columns, and completion warnings share a single replaceable `source_status` slot. These are inspected paths, not claims that all edge cases have been reproduced.
 
@@ -124,9 +124,9 @@ Test selection and binding through consumer-visible rows, metadata, diagnostics,
 
 ## References
 
-1. [Invocation/application code](../../../src/lib.rs), [discovery/resolution code](../../../src/saved_views/mod.rs), and [schema-delta/pending-operation code](../../../src/view/mod.rs): inspected evidence summarized in Context.
-2. [Saved-view requirements](../../specs/saved-views/spec.md), including discovery, source options, pending columns, non-fatal failures, and non-interactive sorting suppression.
-3. [Saved-view archived design](../archive/2026-06-23-add-saved-views/design.md): validation, selection, runtime seeding, and atomic authoring.
-4. [Fast-preview archived design](../archive/2026-09-13-fast-table-preview/design.md): source/view ordering, pending settings, bounded lookahead, and error preparation.
-5. [Interface-updates proposal](../interface-updates/proposal.md): independent runtime view editor scope.
-6. [Contributor guide](../../../docs/contributing.md): one package, feature matrix, implementation verification, and documentation policy.
+1. [Invocation/application code](../../../../src/lib.rs), [discovery/resolution code](../../../../src/saved_views/mod.rs), and [schema-delta/pending-operation code](../../../../src/view/mod.rs): inspected evidence summarized in Context.
+2. [Saved-view requirements](../../../specs/saved-views/spec.md), including discovery, source options, pending columns, non-fatal failures, and non-interactive sorting suppression.
+3. [Saved-view archived design](../2026-06-23-add-saved-views/design.md): validation, selection, runtime seeding, and atomic authoring.
+4. [Fast-preview archived design](../2026-09-13-fast-table-preview/design.md): source/view ordering, pending settings, bounded lookahead, and error preparation.
+5. [Interface-updates proposal](../../interface-updates/proposal.md): independent runtime view editor scope.
+6. [Contributor guide](../../../../docs/contributing.md): one package, feature matrix, implementation verification, and documentation policy.

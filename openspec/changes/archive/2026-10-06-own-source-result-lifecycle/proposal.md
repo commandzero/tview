@@ -34,7 +34,7 @@ This change precedes saved-view binding, conditional-color deepening, and frozen
 
 ## References
 
-1. [Source request, Saved View, and reload call sites](../../../src/lib.rs): `handle_source_config_key`, `handle_saved_view_key`, and `App::reload`; [replacement activation and serialization](../../../src/view/mod.rs): `request_source_query`, `poll_source_query`, and `to_saved_view_yaml`. The reproduced query/save/replay sequence is preserved in the [saved-view delta](specs/saved-views/spec.md).
-2. [Canonical domain vocabulary](../../../CONTEXT.md).
-3. [Current source-model requirements](../../specs/table-source-model/spec.md), [saved-view requirements](../../specs/saved-views/spec.md), and [output requirements](../../specs/non-interactive-output/spec.md).
-4. [Elasticsearch/native-query design](../archive/2026-09-06-add-elasticsearch-source/design.md), [SQLite design](../archive/2026-07-26-add-turso-sqlite-support/design.md), and [active interface-updates proposal](../interface-updates/proposal.md).
+1. [Source request, Saved View, and reload call sites](../../../../src/lib.rs): `handle_source_config_key`, `handle_saved_view_key`, and `App::reload`; [replacement activation and serialization](../../../../src/view/mod.rs): `request_source_query`, `poll_source_query`, and `to_saved_view_yaml`. The reproduced query/save/replay sequence is preserved in the [saved-view delta](specs/saved-views/spec.md).
+2. [Canonical domain vocabulary](../../../../CONTEXT.md).
+3. [Current source-model requirements](../../../specs/table-source-model/spec.md), [saved-view requirements](../../../specs/saved-views/spec.md), and [output requirements](../../../specs/non-interactive-output/spec.md).
+4. [Elasticsearch/native-query design](../2026-09-06-add-elasticsearch-source/design.md), [SQLite design](../2026-07-26-add-turso-sqlite-support/design.md), and [active interface-updates proposal](../../interface-updates/proposal.md).

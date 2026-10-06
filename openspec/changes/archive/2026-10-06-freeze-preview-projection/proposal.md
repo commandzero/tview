@@ -31,8 +31,8 @@ None.
 
 ## References
 
-1. [Current preview preparation](../../../src/view/mod.rs), `prepare_preview` and `preview_preparing` guards.
-2. [Archived fast-preview design](../archive/2026-09-13-fast-table-preview/design.md).
-3. [Current non-interactive output contract](../../specs/non-interactive-output/spec.md).
-4. [Domain vocabulary](../../../CONTEXT.md).
-5. [Contributor standards](../../../docs/contributing.md).
+1. [Current preview preparation](../../../../src/view/mod.rs), `prepare_preview` and `preview_preparing` guards.
+2. [Archived fast-preview design](../2026-09-13-fast-table-preview/design.md).
+3. [Current non-interactive output contract](../../../specs/non-interactive-output/spec.md).
+4. [Domain vocabulary](../../../../CONTEXT.md).
+5. [Contributor standards](../../../../docs/contributing.md).
