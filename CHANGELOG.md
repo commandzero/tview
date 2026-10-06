@@ -4,10 +4,10 @@
 
 ### Fixed
 
-- Saving or reloading after a failed source query keeps the last successful source settings.
-- A failed latest source query no longer exports older rows on interactive quit.
-- Filtered full-schema previews include later accepted fields without showing fields found only in rejected rows.
-- Colored table output uses the same conditional foreground for formatted cells as the interactive viewer.
+- Saving or reloading after a failed source query keeps the last successful source settings (#13).
+- A failed latest source query no longer exports older rows on interactive quit (#13).
+- Filtered full-schema previews include later accepted fields without showing fields found only in rejected rows (#13).
+- Colored table output uses the same conditional foreground for formatted cells as the interactive viewer (#13).
 
 ## [0.1.1] - 2026-10-03
 
