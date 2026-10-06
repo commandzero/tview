@@ -352,8 +352,8 @@ pub struct TableView {
     source_result_extent: Option<crate::table::ResultExtent>,
     source_result_is_partial: bool,
     source_result_warnings: Vec<String>,
-    /// Schema consumed by a frozen read is replayed on the next ordinary
-    /// viewer progress, without changing live screen state during export.
+    /// Schema consumed during projection preparation, including failed attempts,
+    /// is replayed on ordinary viewer progress without changing export screen state.
     pending_projection_schema: RefCell<Option<(SourceGeneration, crate::table::SchemaDelta)>>,
     source_query_provenance: Option<crate::table::NativeQueryArtifact>,
     source_query_coordinator: Rc<RefCell<crate::table::SourceQueryCoordinator>>,
@@ -748,19 +748,20 @@ impl TableView {
                     .filter_map(|(column, width)| width.map(|width| (column, width))),
             );
         }
-        let mut prepared = crate::projection::prepare(
+        let mut delta = crate::table::SchemaDelta::default();
+        let prepared = crate::projection::prepare(
             crate::projection::SourceInput {
                 store: &mut **shared.0.borrow_mut(),
                 definition: definition.clone(),
                 partial: self.source_result_is_partial,
-                replay_schema: true,
+                replay_schema: Some(&mut delta),
             },
             settings,
             crate::projection::ProjectionPolicy::Complete,
             requirements,
             theme,
-        )?;
-        if let Some(delta) = prepared.schema_replay.take() {
+        );
+        if !delta.is_empty() {
             let mut pending = self.pending_projection_schema.borrow_mut();
             match pending.as_mut() {
                 Some((generation, replay)) if *generation == definition.generation => {
@@ -771,7 +772,7 @@ impl TableView {
                 _ => *pending = Some((definition.generation, delta)),
             }
         }
-        Ok(prepared)
+        prepared
     }
 
     pub fn active_source_query(&self) -> Option<&crate::table::SourceQuery> {
@@ -4715,6 +4716,108 @@ mod tests {
         let view = TableView::classify(rows(&[&["1", "2"], &["3", "4"]]), Viewport::new(10, 4));
         assert!(view.header().is_none());
         assert_eq!(view.rows(), rows(&[&["1", "2"], &["3", "4"]]));
+    }
+
+    #[test]
+    fn failed_projection_preserves_discovered_schema_for_live_indexing() {
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use std::sync::Arc;
+
+        struct SchemaThenError {
+            inner: InMemoryTable,
+            late: ColumnDefinition,
+            phase: Arc<AtomicU8>,
+        }
+
+        impl TableStore for SchemaThenError {
+            fn generation(&self) -> SourceGeneration {
+                self.inner.generation()
+            }
+
+            fn row_count(&self) -> RowCount {
+                self.inner.row_count()
+            }
+
+            fn column_count(&self) -> usize {
+                if self.phase.load(Ordering::Relaxed) >= 2 {
+                    2
+                } else {
+                    1
+                }
+            }
+
+            fn row(&mut self, index: RowIndex) -> anyhow::Result<Option<Row>> {
+                self.inner.row(index)
+            }
+
+            fn ensure_indexed_through(&mut self, index: RowIndex) -> anyhow::Result<IndexProgress> {
+                if self.phase.load(Ordering::Relaxed) == 2 && index.0 == usize::MAX {
+                    self.phase.store(3, Ordering::Relaxed);
+                    anyhow::bail!("injected read failure after schema discovery");
+                }
+                let mut progress = self.inner.ensure_indexed_through(index)?;
+                if self.phase.load(Ordering::Relaxed) == 1 {
+                    self.phase.store(2, Ordering::Relaxed);
+                    progress.schema_delta.added_columns.push(self.late.clone());
+                }
+                Ok(progress)
+            }
+
+            fn scan_rows(
+                &mut self,
+                request: ScanRequest,
+                visitor: &mut dyn crate::table::RowVisitor,
+            ) -> anyhow::Result<ScanProgress> {
+                self.inner.scan_rows(request, visitor)
+            }
+
+            fn materialize(&mut self) -> anyhow::Result<InMemoryTable> {
+                self.inner.materialize()
+            }
+        }
+
+        let mut opened = query_test_table(&["alpha"], false);
+        let generation = opened.generation;
+        let phase = Arc::new(AtomicU8::new(0));
+        let mut late = opened.definition.columns[0].clone();
+        late.id.ordinal = 1;
+        late.source_identity = ColumnSourceIdentity::Positional(1);
+        late.display_name = "late".to_owned();
+        late.source_type = LogicalType::Integer;
+        opened.store = Box::new(SchemaThenError {
+            inner: InMemoryTable::from_rows(
+                generation,
+                vec![Row::new(
+                    RowId {
+                        generation,
+                        ordinal: 0,
+                    },
+                    vec![CellValue::Text("alpha".to_owned()), CellValue::Integer(7)],
+                )],
+            )
+            .unwrap(),
+            late,
+            phase: phase.clone(),
+        });
+        let mut view = TableView::from_opened_table(opened, Viewport::new(1, 1)).unwrap();
+        phase.store(1, Ordering::Relaxed);
+
+        let error = view
+            .prepare_projection(
+                crate::output::requirements(
+                    crate::output::OutputFormat::Json,
+                    crate::output::ColorOutput::Never,
+                )
+                .unwrap(),
+                &crate::theme::default_theme(),
+            )
+            .err()
+            .expect("projection must report the read failure");
+        assert!(error.to_string().contains("injected read failure"));
+
+        view.ensure_source_indexed_through(0).unwrap();
+        assert_eq!(view.header().unwrap(), ["value", "late"]);
+        assert_eq!(view.rendered_visible_row(0).unwrap(), ["alpha", "7"]);
     }
 
     #[test]

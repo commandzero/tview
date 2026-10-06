@@ -82,7 +82,7 @@ pub fn run(args: cli::Args) -> anyhow::Result<()> {
                     store: opened.store.as_mut(),
                     definition: opened.definition,
                     partial,
-                    replay_schema: false,
+                    replay_schema: None,
                 },
                 settings,
                 policy,

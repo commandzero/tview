@@ -43,6 +43,24 @@ pub(crate) struct SelectedRows {
     pub remaining: Option<RowCount>,
 }
 
+fn apply_schema_delta(
+    definition: &mut TableDefinition,
+    delta: SchemaDelta,
+    replay: Option<&mut SchemaDelta>,
+) -> anyhow::Result<()> {
+    if let Some(replay) = replay {
+        replay
+            .added_columns
+            .extend(delta.added_columns.iter().cloned());
+        replay
+            .widened_types
+            .extend(delta.widened_types.iter().cloned());
+        replay.completed |=
+            delta.completed && definition.schema_state != crate::table::SchemaState::Complete;
+    }
+    definition.apply_delta(delta)
+}
+
 /// Sequential selection stops at one *matching* lookahead; full traversal is
 /// reserved for complete exports, sorting, numeric filtering, and full schema.
 /// Deferred rows remain in the existing indexed store and are replayed by index
@@ -53,13 +71,18 @@ pub(crate) fn select_rows(
     policy: ProjectionPolicy,
     behavior: &mut impl SelectionBehavior,
     partial: bool,
+    mut replay_schema: Option<&mut SchemaDelta>,
 ) -> anyhow::Result<SelectedRows> {
     if store.generation() != definition.generation {
         anyhow::bail!("projection source belongs to a different generation");
     }
     let initial_columns = store.initial_schema_column_count();
     let mut first_progress = store.ensure_indexed_through(RowIndex(0))?;
-    definition.apply_delta(std::mem::take(&mut first_progress.schema_delta))?;
+    apply_schema_delta(
+        &mut definition,
+        std::mem::take(&mut first_progress.schema_delta),
+        replay_schema.as_deref_mut(),
+    )?;
     // Bind the source's first available schema, including declared headers of
     // empty sources, before choosing traversal demand.
     behavior.observe(&definition)?;
@@ -77,7 +100,11 @@ pub(crate) fn select_rows(
         // for a requested row. A complete traversal must first await effective
         // EOF; temporary absence is not EOF, and late errors must propagate.
         let mut progress = store.ensure_indexed_through(RowIndex(usize::MAX))?;
-        definition.apply_delta(std::mem::take(&mut progress.schema_delta))?;
+        apply_schema_delta(
+            &mut definition,
+            std::mem::take(&mut progress.schema_delta),
+            replay_schema.as_deref_mut(),
+        )?;
         behavior.observe(&definition)?;
         first_progress = Some(progress);
     }
@@ -107,11 +134,15 @@ pub(crate) fn select_rows(
             completed,
         } = progress.schema_delta;
         if !added_columns.is_empty() || !widened_types.is_empty() || completed {
-            definition.apply_delta(SchemaDelta {
-                added_columns,
-                widened_types,
-                completed,
-            })?;
+            apply_schema_delta(
+                &mut definition,
+                SchemaDelta {
+                    added_columns,
+                    widened_types,
+                    completed,
+                },
+                replay_schema.as_deref_mut(),
+            )?;
             // The lookahead is evidence of another effective match, not a
             // second opportunity to change frozen presentation or warnings.
             if full_traversal || rows.len() < limit || behavior.pending_filters() {
@@ -740,14 +771,14 @@ pub(crate) struct FrozenProjection {
     pub output: crate::output::PreparedOutput,
     pub remaining: Option<RowCount>,
     pub diagnostics: Vec<String>,
-    pub(crate) schema_replay: Option<SchemaDelta>,
 }
 
 pub(crate) struct SourceInput<'a> {
     pub store: &'a mut dyn TableStore,
     pub definition: TableDefinition,
     pub partial: bool,
-    pub replay_schema: bool,
+    /// Retain consumed schema progress even if preparation subsequently fails.
+    pub replay_schema: Option<&'a mut SchemaDelta>,
 }
 
 /// The only source-reading output preparation operation. All selection,
@@ -774,35 +805,14 @@ pub(crate) fn prepare(
         replay_schema,
     } = source;
 
-    let original_schema =
-        replay_schema.then(|| (definition.columns.clone(), definition.schema_state));
-    let selected = select_rows(store, definition, policy, &mut settings, partial)?;
-    let schema_replay = original_schema.and_then(|(original, state)| {
-        let delta = SchemaDelta {
-            added_columns: selected
-                .definition
-                .columns
-                .iter()
-                .skip(original.len())
-                .cloned()
-                .collect(),
-            widened_types: original
-                .iter()
-                .zip(&selected.definition.columns)
-                .filter_map(|(before, after)| {
-                    (before.source_type != after.source_type).then_some(
-                        crate::table::TypeWidening {
-                            column: after.id,
-                            source_type: after.source_type,
-                        },
-                    )
-                })
-                .collect(),
-            completed: state != crate::table::SchemaState::Complete
-                && selected.definition.schema_state == crate::table::SchemaState::Complete,
-        };
-        (!delta.is_empty()).then_some(delta)
-    });
+    let selected = select_rows(
+        store,
+        definition,
+        policy,
+        &mut settings,
+        partial,
+        replay_schema,
+    )?;
     let header_visible = selected.definition.relation.header_visible;
     let table_layout = requirements.stable_widths;
     #[cfg(feature = "saved-views")]
@@ -1224,7 +1234,6 @@ pub(crate) fn prepare(
         },
         remaining: selected.remaining,
         diagnostics: settings.diagnostics,
-        schema_replay,
     })
 }
 
@@ -1310,6 +1319,7 @@ mod tests {
             },
             &mut NoViewOperations,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(prefix.rows.len(), 1);
@@ -1322,6 +1332,7 @@ mod tests {
             ProjectionPolicy::Complete,
             &mut NoViewOperations,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(complete.rows.len(), 3);
@@ -1361,6 +1372,7 @@ mod tests {
             },
             &mut NoViewOperations,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(result.rows.len(), 1);
@@ -1405,6 +1417,7 @@ mod tests {
             },
             &mut settings,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(selected.rows.len(), 1);

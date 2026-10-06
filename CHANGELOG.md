@@ -8,6 +8,7 @@
 - A failed latest source query no longer exports older rows on interactive quit (#13).
 - Filtered full-schema previews include later accepted fields without showing fields found only in rejected rows (#13).
 - Colored table output uses the same conditional foreground for formatted cells as the interactive viewer (#13).
+- Failed output preparation retains schema updates already discovered from the source (#13).
 
 ## [0.1.1] - 2026-10-03
 

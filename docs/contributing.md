@@ -117,6 +117,9 @@ frozen projection; writers must not fetch source rows or change live view
 configuration, stores, or screen state. Whole-result sorting, numeric filter
 profiles, and explicit full-schema scans can require complete traversal.
 Source-native limits still bound the result; local filters never refill it.
+Retain schema deltas consumed from a shared store even when preparation fails;
+replay them on the next ordinary viewer progress without publishing partial
+output or changing the frozen view's presentation.
 See [CLI output](cli-contract.md) and [large files](large-files.md).
 
 Resolve conditional colors from configured YAML strings into foregrounds for
