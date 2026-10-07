@@ -391,6 +391,63 @@ fn toon_source_filter_precedes_saved_source_limit() {
         json!({"columns": ["id", "keep"], "rows": [["2", "true"]]})
     );
 }
+#[cfg(feature = "saved-views")]
+#[test]
+fn filtered_toon_preview_discovers_accepted_columns_within_source_cap() {
+    for (full_schema, source_limit, expected_columns) in [
+        (true, None, vec!["keep", "temp.min", "temp.max"]),
+        (true, Some(1), vec!["keep", "temp.min"]),
+        (false, None, vec!["keep", "temp.min"]),
+    ] {
+        let root = tempfile::tempdir().expect("test directory");
+        let views = root.path().join("tview/views");
+        std::fs::create_dir_all(&views).expect("saved views directory");
+        let limit = source_limit
+            .map(|limit| format!("  limit: {limit}\n"))
+            .unwrap_or_default();
+        std::fs::write(
+            views.join("filtered.yml"),
+            format!("name: filtered\nfilenames: ['*']\nsource:\n  format: toon\n{limit}  filters:\n    - {{column: /keep, operator: equal, value: true}}\nview: {{}}\n"),
+        )
+        .expect("saved view");
+        let path = root.path().join("input.toon");
+        std::fs::write(
+            &path,
+            "[4]:\n  - keep: false\n    rejected:\n      first: 0\n  - keep: true\n    temp:\n      min: 1\n  - keep: true\n    temp:\n      max: 2\n  - keep: false\n    rejected:\n      last: 3\n",
+        )
+        .expect("TOON input");
+        let mut command = command(root.path());
+        command.args(["--view", "filtered", "--top-lines", "1", "--color", "never"]);
+        if full_schema {
+            command.args(["--schema-scan", "full"]);
+        }
+        let output = command
+            .arg(&path)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let output = String::from_utf8(output).expect("UTF-8 table");
+        let mut lines = output.lines();
+        assert_eq!(
+            lines
+                .next()
+                .expect("header")
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            expected_columns
+        );
+        assert_eq!(
+            lines
+                .next()
+                .expect("first accepted row")
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+            ["true", "1"]
+        );
+    }
+}
 
 #[test]
 fn strict_toon_errors_leave_serialized_output_empty() {

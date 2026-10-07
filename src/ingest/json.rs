@@ -569,7 +569,16 @@ fn open_json_rows_with_metadata(
     let mut schema = JsonSchema::new(generation);
     schema.qualified_labels = qualified_labels;
     let mut bytes_scanned = 0_u64;
+    let scan_prefix = options.preview
+        && (options.schema_scan != SchemaScan::Full
+            || options.limit.is_some()
+            || !options.source_filters.is_empty());
     let initial_rows = match options.schema_scan {
+        _ if scan_prefix => rows.first().map_or(0, |row| {
+            schema.observe(row);
+            bytes_scanned = row.source_bytes;
+            1
+        }),
         SchemaScan::Full => rows.len(),
         SchemaScan::Default => {
             let mut count = 0;
@@ -584,7 +593,7 @@ fn open_json_rows_with_metadata(
             count
         }
     };
-    if options.schema_scan == SchemaScan::Full {
+    if options.schema_scan == SchemaScan::Full && !scan_prefix {
         for row in &rows {
             schema.observe(row);
             bytes_scanned = bytes_scanned.saturating_add(row.source_bytes);
@@ -609,6 +618,7 @@ fn open_json_rows_with_metadata(
         indexed_rows: initial_rows,
         bytes_scanned,
         complete,
+        preview: options.preview,
     };
     Ok(OpenedSource::implicit(OpenedTable {
         generation,
@@ -2139,6 +2149,7 @@ struct JsonTableStore {
     indexed_rows: usize,
     bytes_scanned: u64,
     complete: bool,
+    preview: bool,
 }
 
 impl JsonTableStore {
@@ -2154,6 +2165,18 @@ impl JsonTableStore {
 }
 
 impl TableStore for JsonTableStore {
+    fn present_columns(&self, row: crate::table::RowId) -> Option<Vec<usize>> {
+        if !self.preview {
+            return None;
+        }
+        self.rows.get(row.ordinal as usize).map(|row| {
+            row.cells
+                .iter()
+                .map(|(path, _, _)| self.schema.indices[path])
+                .collect()
+        })
+    }
+
     fn generation(&self) -> SourceGeneration {
         self.generation
     }
@@ -2164,6 +2187,13 @@ impl TableStore for JsonTableStore {
 
     fn column_count(&self) -> usize {
         self.schema.columns.len()
+    }
+    fn initial_schema_column_count(&self) -> usize {
+        if self.preview {
+            0
+        } else {
+            self.column_count()
+        }
     }
 
     fn row(&mut self, index: RowIndex) -> anyhow::Result<Option<Row>> {

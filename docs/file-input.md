@@ -104,6 +104,12 @@ are applied; it has no incremental or lazy reader. Schema discovery and automati
 object detection measure compact JSON-equivalent logical payload bytes, not the
 compressed TOON file size. The schema scan limit is not an input-memory limit.
 
+Preview columns still follow the shared structured-table rules: a bounded preview
+uses fields present in its accepted prefix. With `--schema-scan full`, fields from
+later accepted rows are included only within the source limit; fields found only
+in rejected rows are not displayed. Full-document validation does not expose
+those rejected or out-of-limit fields.
+
 ## Format detection
 
 `--format auto|delimited|json|ndjson|toon` is always available. Builds with the

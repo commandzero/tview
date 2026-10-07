@@ -120,3 +120,9 @@ The system SHALL read TOON 4.1 UTF-8 documents in strict mode through its typed 
 - **WHEN** a TOON source is opened with a preview, source limit, or bounded schema scan
 - **THEN** the reader decodes and validates the complete document before limiting rows
 - **AND** schema discovery measures compact JSON-equivalent logical row bytes rather than evenly distributing file bytes
+
+#### Scenario: Filtered preview schema
+- **WHEN** a TOON preview uses source filters
+- **THEN** displayed columns exclude fields present only in rejected rows
+- **AND** a bounded preview discovers fields from its accepted prefix
+- **AND** a full-schema preview includes fields from later accepted rows only within the source cap, without relaxing full-document validation

@@ -398,6 +398,13 @@ impl OpenOptions {
         }
     }
 
+    pub(crate) fn has_delimited_options(&self) -> bool {
+        self.delimited.encoding.is_some()
+            || self.delimited.delimiter.is_some()
+            || self.delimited.quoting.is_some()
+            || self.delimited.quote_char != b'"'
+    }
+
     pub fn validate(&self) -> Result<(), SourceOptionError> {
         if self.format == InputFormat::Delimited && self.json_path.is_some() {
             return Err(SourceOptionError::JsonPathRequiresStructuredFormat);
