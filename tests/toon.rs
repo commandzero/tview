@@ -40,6 +40,25 @@ fn selected_toon_table_preserves_nested_header_context() {
 }
 
 #[test]
+fn explicit_delimited_options_override_toon_extension_under_auto() {
+    let root = tempfile::tempdir().expect("test directory");
+    let path = root.path().join("records.toon");
+    std::fs::write(&path, "id|name\n1|Ada\n").expect("write delimited input");
+    let output = command(root.path())
+        .args(["--format", "auto", "--delimiter", "|", "--output", "json"])
+        .arg(&path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        document(&output),
+        json!({"columns": ["id", "name"], "rows": [["1", "Ada"]]})
+    );
+}
+
+#[test]
 fn later_toon_columns_keep_nested_context_after_bounded_schema_scan() {
     let root = tempfile::tempdir().expect("test directory");
     let path = root.path().join("forecast.toon");

@@ -94,7 +94,11 @@ Format resolution SHALL use explicit CLI or saved format first, then an unambigu
 - **THEN** existing signature, extension, and bounded content probing behavior remains authoritative
 
 ### Requirement: Strict TOON 4.1 input
-The system SHALL read TOON 4.1 UTF-8 documents in strict mode through its typed structured-table pipeline. A `.toon` extension SHALL select TOON without ambiguous content probing; explicit `--format toon` SHALL support local files and stdin. Plain stdin under `auto` SHALL retain its delimited default. TOON output SHALL NOT be added by the reader.
+The system SHALL read TOON 4.1 UTF-8 documents in strict mode through its typed structured-table pipeline. Under `auto`, a `.toon` extension SHALL select TOON without ambiguous content probing unless delimited-only options override extension detection; explicit `--format toon` SHALL support local files and stdin. Plain stdin under `auto` SHALL retain its delimited default. TOON output SHALL NOT be added by the reader.
+
+#### Scenario: Explicit delimited options override extension detection
+- **WHEN** a local file has a `.toon` extension, the selected format is `auto`, and delimited-only options are supplied
+- **THEN** the reader selects delimited input rather than TOON, subject to the existing SQLite signature precedence
 
 #### Scenario: Nested tabular input
 - **WHEN** a TOON document contains tabular arrays with nested header fields, comments, an initial BOM, or CRLF

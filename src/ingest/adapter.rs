@@ -433,11 +433,6 @@ fn resolve_structured_options(detected: InputFormat, options: &OpenOptions) -> I
 
 fn resolve_format(options: &OpenOptions, source: &InputSource, sample: &[u8]) -> InputFormat {
     if options.format == InputFormat::Auto && has_delimited_options(options) {
-        if let InputSource::Path(path) = source {
-            if format_from_extension(path) == Some(InputFormat::Toon) {
-                return InputFormat::Toon;
-            }
-        }
         if has_sqlite_signature(sample) {
             #[cfg(feature = "sqlite")]
             return InputFormat::Sqlite;

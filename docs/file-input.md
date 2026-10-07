@@ -113,8 +113,9 @@ compressed TOON file size. The schema scan limit is not an input-memory limit.
 Batch stdin is treated as delimited under `auto` unless an explicit or saved
 structured format, or a structured option such as `--json-path`, selects
 structured input. Use `--format json`, `--format ndjson`, or `--format toon` for
-structured stdin. A `.toon` extension selects TOON; ambiguous extensionless text
-is not probed as TOON.
+structured stdin. Under `auto`, a `.toon` extension selects TOON unless
+delimited-only options override it; ambiguous extensionless text is not probed
+as TOON.
 An unambiguous URL scheme can select a source format: `libsql://` is recognized
 as SQLite but remains unsupported and reserved for future use; `file://`
 resolves to a local path. HTTP and HTTPS URLs require `--format elasticsearch`;
