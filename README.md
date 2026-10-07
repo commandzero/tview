@@ -46,10 +46,10 @@ tview data.csv --output json > rows.json
 tview data.csv --interactive --output table > selected.txt
 ```
 
-`-t` / `--table-color` writes a colored table. Add a count (`-t 10`) to show
-only the first rows after saved-view sorting. `-p 10` / `--preview 10` skips
-saved-view sorting for a quick, colored preview in source order. Bare `-t`
-is shorthand for `--color always --output table`.
+`-t` / `--table-color` writes a colored table. Add a row count, such as `-t 10`,
+to limit the output after saved-view sorting. `-p 10` / `--preview 10` skips
+saved-view sorting and writes a colored preview in source order.
+Bare `-t` is shorthand for `--color always --output table`.
 
 The last command opens the viewer and exports your final view when you quit.
 Use a different output path from the input.

@@ -2,7 +2,7 @@
 type: Guide
 title: Keybindings
 description: Navigation, search, sorting, filters, and column controls.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:44:29Z }
 ---
 
 # Keybindings
@@ -29,10 +29,10 @@ position.
 | `Enter` | View full cell contents in a popup. |
 | `/` | Search. |
 | `i` | Edit the current column view configuration, sort state, and filter action. |
-| `u` | Edit staged source filters, native sort, and source limit. |
+| `u` | Edit staged source filters, native sort, and source limit. Failed requests leave the current rows visible. |
 | `V` | Show source-independent view configuration. |
-| `p` | Open the source query popup. Press `y` in the popup to copy the query when available and clipboard support is enabled. |
-| `f`, `F` | Filter in or filter out rows by the current column. `Tab` cycles text, regex, and numeric modes; submitting an empty condition clears filters for the current column. |
+| `p` | Open the source query popup. In the popup, press `y` to copy the query if one is available and clipboard support is enabled. |
+| `f`, `F` | Filter in or filter out rows by the current column. `Tab` cycles through text, regex, and numeric modes. Submit an empty condition to clear filters for the current column. |
 | `n` | Go to the next search result. |
 | `N` | Go to the previous search result. |
 | `t` | Toggle fixed header row. |
@@ -42,7 +42,7 @@ position.
 | `s`, `S` | Sort the current column lexically, ascending or descending. |
 | `a`, `A` | Sort the current column naturally, ascending or descending. |
 | `#`, `@` | Sort the current column numerically, ascending or descending. |
-| `r` | Reload the committed source configuration, superseding pending source work. Keep compatible view settings; a reload error ends the session. Reloading stdin does nothing. |
+| `r` | Reload the last successful source configuration, keeping compatible view settings. A reload error ends the session; stdin cannot be reloaded. |
 | `y` | Yank the rendered current cell to the clipboard when clipboard support is enabled. |
 | `Y` | Yank the raw current cell to the clipboard when clipboard support is enabled. |
 | `v` | Show the saved view modal when saved views are enabled. |
@@ -57,7 +57,6 @@ position.
 | `[num]{` | Skip to the previous column value change. |
 | `[num]}` | Skip to the next column value change. |
 
-Source Configuration (`u`) edits a request, not the active result. A replacement
-becomes active only after its result and view are ready. If it fails, the old
-rows remain visible. Saving a view or reloading uses the last successful source
-configuration rather than the failed request.
+Source changes staged with `u` become active only when the replacement is ready.
+Saving a view or reloading uses the last successful source configuration. See
+[saved views](saved-views.md#source-settings) for source and view precedence.
