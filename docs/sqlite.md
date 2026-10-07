@@ -2,7 +2,7 @@
 type: Guide
 title: SQLite sources
 description: Read-only database browsing, table selection, and source queries.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:44:18Z }
 ---
 
 # SQLite sources
@@ -12,68 +12,50 @@ tview examples/data/us-counties.sqlite3
 tview examples/data/us-counties.sqlite3 --format sqlite --table counties
 ```
 
-Tview opens local SQLite files through Turso. It selects the table or compatible
-ordinary view automatically when only one is available. With several choices,
-the viewer opens a table picker. Batch output also selects the sole available
-table or view automatically. When several relations are available, pass
-`--table <name>` or a saved `source.table`, unless a query selects the data.
+Tview opens local SQLite files read-only through Turso. It selects the only
+ordinary table or compatible ordinary view automatically. With several
+relations, the viewer opens a picker; batch output needs `--table <name>`,
+a saved `source.table`, or `--query`.
 
-SQLite input requires a local file. Stdin, Turso Cloud, `libsql://`, and other
-remote SQLite URLs are unsupported. The `libsql://` scheme is reserved for
-future use. SQLite support is enabled by default. See
+SQLite support is enabled by default. Stdin, Turso Cloud, `libsql://`, and
+other remote SQLite URLs are unsupported; `libsql://` is reserved. See
 [installation](installation.md) for feature selection.
 
 ## Source queries and local view
 
-SQLite source queries return at most 1,000 rows by default. Source filters and
-SQLite sorting run before that limit. View filters, local sorts, search,
-formatting, and hiding operate on the returned rows without fetching
-replacements.
+Source queries return at most 1,000 rows by default. Source filters and SQLite
+sorts run before the limit. Local view filters, sorts, search, formatting, and
+hiding act on returned rows without fetching replacements.
 
-Press `u` for Source Configuration to stage a query's limit, filters, and sort.
-Press `V` for View Configuration or `i` for the current column's settings. The
-`f`/`F` and sort keys affect the local view only.
-
-Source Configuration holds a request until the replacement result has loaded
-and its view has been rebuilt. Only then does it become the committed source
-configuration. A failed request leaves the previous rows and committed query
-available; saving a view uses that successful query, not the rejected SQL.
-Reload (`r`) reopens the committed configuration and supersedes pending requests.
-It keeps compatible column settings and local view operations by source identity,
-not by the position of a renamed or removed column. A reload error still ends
-the interactive session.
+Press `u` to change the source limit, filters, and sort; press `V` for local
+view settings or `i` for a column. The `f`/`F` and sort keys change only the
+local view. Failed source changes leave the previous rows and query in place.
+Saving keeps the last successful source query. Reload (`r`) reopens that query
+and keeps compatible local settings, but a reload error ends the session.
+See [saved views](saved-views.md#source-settings) for saving and reload rules.
 
 ## Custom SQL
 
-`--query` accepts one read-only, row-producing SQLite statement. SELECT and CTE
-queries are composed as a derived table so source filters, source sorting, and
-the hard limit remain enforced. Multiple statements, writes, state-changing
-pragmas, unbound parameters, and non-tabular statements are rejected while the
-database remains opened with storage-level read-only flags.
+`--query` accepts one read-only, row-producing statement. SELECT and CTE
+queries are wrapped so source filters, sorts, and the hard limit still apply.
+Multiple statements, writes, state-changing pragmas, unbound parameters, and
+non-tabular statements are rejected. The database also uses storage-level
+read-only flags.
 
-Press `p` to open the Query modal. It shows the parameterized SQLite `SELECT`,
-typed parameters, and a copyable statement with parameter values filled in. It
-lists local view operations separately because they do not run in SQL. The
-displayed query omits the extra row Tview requests to detect truncation.
+Press `p` to inspect and copy the effective SQLite `SELECT` with parameter
+values. The popup shows typed parameters and lists local view operations
+separately. Its query omits the extra row requested to detect truncation.
 
 ## Read-only access and supported tables
 
-Tview opens the database read-only. Browsing does not switch a rollback-journal
-database to WAL, create sidecar files, or change existing database or sidecar
-bytes. Source filters use bound parameters.
+Browsing does not switch a rollback-journal database to WAL, create sidecar
+files, or change database or sidecar bytes. Source filters use bound parameters.
+Tview lists ordinary tables and compatible ordinary views, but not virtual
+tables such as FTS5 and RTree, shadow tables, or SQLite-internal tables.
 
-Tview lists ordinary tables and compatible ordinary views. It reports virtual
-tables, including FTS5 and RTree, as unsupported and hides shadow and
-SQLite-internal tables. See [Turso implementation
-details](turso-build-impact.md) for the connection safeguards and dependency
-choices.
+Declared column types provide initial hints; runtime values can widen them.
+Tview can keep cursor and marks across queries for tables with rowids or
+declared primary keys. It resets them for views and tables without stable keys.
 
-Declared column types appear as source metadata and provide initial type hints.
-SQLite values remain dynamically typed at runtime, and observed integer, real,
-text, blob, and null values can widen those hints. For tables with rowids or
-declared primary keys, Tview can track the cursor and marks across queries. It
-resets that state for views and tables without a stable key.
-
-The [sample database](../examples/data/us-counties.sqlite3) contains 1,000 county
-records. Its [sample guide](../examples/data/README.md) records the Census Bureau
-source and column selection.
+Try the [sample database](../examples/data/us-counties.sqlite3); its [source
+and column selection](../examples/data/README.md) is documented with the data.

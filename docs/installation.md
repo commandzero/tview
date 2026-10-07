@@ -2,7 +2,7 @@
 type: Guide
 title: Installation
 description: Cargo installation, optional features, and local builds.
-generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:21:51Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:35:24Z }
 ---
 
 # Installation
@@ -14,8 +14,8 @@ cargo install tview
 ```
 
 See [release platforms](releases.md#platform-and-artifact-contract) for native
-archive targets and support floors. If you used Tabview, follow the [migration
-guide](migration.md).
+archive targets and support floors. For an existing Tabview installation,
+follow the [migration guide](migration.md).
 
 ## Optional features
 
@@ -34,7 +34,7 @@ cargo install tview --features all
 
 The `all` feature also works with `--no-default-features`.
 
-Omit the default features for a smaller build, or select them individually:
+To omit default features or select them individually, use:
 
 ```sh
 cargo install tview --no-default-features

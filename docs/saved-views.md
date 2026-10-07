@@ -2,64 +2,52 @@
 type: Guide
 title: Saved views
 description: Save source options, column formatting, filters, sorting, and colors.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:44:29Z }
 ---
 
 # Saved views
 
-Tview loads YAML views from `$XDG_CONFIG_HOME/tview/views`, or
-`~/.config/tview/views` when `XDG_CONFIG_HOME` is unset. Tview uses this path on
-every platform, including macOS. Subdirectories are scanned recursively, so
-bundles can live in folders such as `views/elasticsearch/`. Directory symlinks
-are not followed. Files ending in `.yml` and `.yaml` are accepted.
+Tview reads `.yml` and `.yaml` views recursively from
+`$XDG_CONFIG_HOME/tview/views`, or `~/.config/tview/views` when
+`XDG_CONFIG_HOME` is unset. This location also applies on macOS. Directory
+symlinks are not followed. Put related views in subdirectories if useful.
 
-View names remain file stems, regardless of their subdirectory. Keep stems unique
-across bundles. For duplicates, `.yml` wins over `.yaml`; otherwise the first
-path in lexical order wins. A footer warning is shown in interactive mode;
-batch mode writes the warning to stderr.
+The file stem is the view name, even in a subdirectory. Keep stems unique. If
+they clash, `.yml` wins over `.yaml`; otherwise the first path in lexical order
+wins. Tview warns in the interactive footer or on batch stderr.
 
-Views match the input basename. Remote endpoints use a name such as
-`https_elastic.example_9200` to distinguish hosts without storing credentials,
-query strings, or fragments. Filename patterns can be exact strings, globs
-containing `*`, `?`, or `[`, or regexes that start with `^` or end with `$`.
-Exact matches win before globs, then regexes. Use `--view <name>` to force a
-view by file stem, or `--no-view` to disable loading and saving for that run.
+Views match the input basename. A remote endpoint uses a name such as
+`https_elastic.example_9200`, without credentials, query strings, or fragments.
+`filenames` accepts exact names, globs containing `*`, `?`, or `[`, and regexes
+that start with `^` or end with `$`. Exact matches take precedence over globs,
+then regexes. Force a file stem with `--view <name>` or disable view loading and
+saving with `--no-view`:
 
 ```sh
 tview data.csv --view my-view
 tview data.csv --no-view
 ```
 
-Tview selects and validates a view once per invocation. Its source settings
-and column presentation come from that same snapshot, even if the YAML changes
-while the source opens. A new invocation discovers current files. `--no-view`
-skips discovery and saved-view authoring; a missing forced `--view` fails before
-opening the source.
+Tview selects one view for the invocation. A missing forced view fails before
+opening the source. Start another invocation to pick up changes to the YAML.
 
 ## Column settings
 
-Set only the column properties you want to override:
+Set only the properties you want to override. This view gives a column a type,
+formats another, and applies a local sort and filter:
 
 ```yaml
 name: cat-shards
-filenames:
-  - cat_shards.txt
+filenames: [cat_shards.txt]
 source: {}
 view:
-  nulls: last
   columns:
     shard:
       type: integer
       width: header
-      align: left
-      nulls: first
     "*count":
       type: integer
       format: locale
-      width: content
-    segment:
-      type: text
-      visible: false
   sort:
     - column: shard
       direction: asc
@@ -71,102 +59,71 @@ view:
       condition: ">0"
 ```
 
-A keyed-object view can pin its row shape and address the synthetic key column
-independently of its display label:
+Delimited headers match case-insensitively. Exact column keys beat wildcard
+keys; wildcard ties use the most literal characters, then lexical order.
+Column types and null placement apply before saved sorts and filters, including
+when structured columns arrive later. Each saved filter is installed only once.
+Local edits supersede pending saved sorts and filters. `--sorted false`
+suppresses saved view sorts, including late sorts, but not source order,
+filters, or formatting.
 
-```yaml
-name: repositories
-filenames: [repositories.json]
-source:
-  format: json
-  object_mode: entries
-view:
-  columns:
-    "@key":
-      label: Repository
-```
+`view.nulls` and per-column `nulls: first|last` set sort placement regardless
+of direction. The column setting wins; `last` is the default. `view.locale`
+overrides the system POSIX locale for `format: locale`, whose fallback is
+`en_US`. See the [view schema](../schemas/view.schema.json) for types, formats,
+widths, and number masks.
 
-Column keys match headers case-insensitively for delimited input. Exact keys
-win over wildcard keys; wildcard ties use the most literal characters, then
-lexical order. Metadata for a column, including its type and null placement,
-binds before saved sorts and filters. The same rule applies when structured
-columns are discovered later, so a late high-priority sort retains its order
-and a saved filter does not get installed twice. Supported
-type aliases are `string`, `text`, `date`, `ip`, `number`, `float`, `integer`,
-`semver`, `boolean`, `char`, `bit`, and `word`. Formats include `plain`,
-`locale`, `mask`, `uppercase`, `lowercase`, `char`, `bit`, and `word`. Number
-masks support `0`, `0.00`, `#,##0`, and `#,##0.00` forms. `locale` uses the
-system POSIX locale with `en_US` fallback, or `view.locale`. Headers are
-prefixed first with sort state, then filter state: `▲` for ascending sort, `▼`
-for descending sort, `+` for filter-in, `-` for filter-out, and `±` for multiple
-filters. Truncation applies after those prefix markers.
+Headers show sort state before filter state: `▲` means ascending, `▼`
+descending, `+` filter-in, `-` filter-out, and `±` multiple filters. Markers
+are added before header truncation.
 
 ## Source settings
 
-Tview applies `source` settings before opening the table. Formatting and local
-operations belong under `view`. Explicit CLI source options override the saved
-view, which overrides defaults; the selected view still supplies presentation
-against the resulting schema. Supplying `--schema-scan default` therefore
-overrides a saved `source.schema_scan: full` for one invocation. For object
-tables, Tview saves `source.object_mode` as `record` or `entries` so later
-detection changes do not change the rows. Non-object tables omit it.
+Tview applies `source` settings before opening a table; `view` settings
+format, filter, and sort the resulting rows. Explicit CLI source options
+override saved options, which override defaults. For example,
+`--schema-scan default` overrides saved `source.schema_scan: full`.
+`source.object_mode: record|entries` pins how an object becomes rows.
 
-Saving uses the complete source configuration of the last successfully
-activated result. It retains applicable opening choices, the selected relation
-or configured native base query, structured source operations, and its effective
-finite limit. Draft, pending, failed, or superseded requests do not change that
-source section; currently applied local settings still belong under `view`.
-Native sources persist either `source.table` or `source.query`, never both.
-Generated SQL or ES|QL and the extra-row limit probe are not saved as a
-user-supplied base query. For a file source opened without a finite limit, the
-limit remains omitted. Local filters do not fetch replacement source rows.
+Saving uses the last successfully activated source configuration, including
+its effective finite limit, along with the current local view settings.
+Pending or failed requests do not replace saved source settings. Native
+sources save either `source.table` or `source.query`, not generated SQL or
+ES|QL. A file source opened without a finite limit leaves the limit unset.
+Reload reopens that committed source configuration while keeping compatible
+live view settings; it does not reread the saved YAML. Reloading stdin does
+nothing, and a reload error ends the interactive session.
 
-Reload reopens the committed source configuration and supersedes pending work.
-It keeps compatible live view settings rather than rereading YAML or resetting
-the view to its selected snapshot. Column settings follow unambiguous compatible
-source identities, not column positions. Stable adapter-proven row identities
-can preserve cursor and marks across a compatible replacement; otherwise
-row-bound state resets. Reloading stdin remains a no-op; a reload error ends
-the interactive session.
-
-For file sources, saved source filters run on decoded logical records before the
-source limit. Delimited, JSON, and NDJSON readers stream records; TOON validates
-the complete document first. Use `column: "*"` for a grep-style whole-record
-filter. Quoted multiline CSV fields remain part of one logical
-record. File sources do not offer source sorting because it would require
-loading the full input. Use `view.sort` to sort the bounded result.
+For files, source filters run on decoded records before the source limit.
+Delimited, JSON, and NDJSON readers stream records; TOON validates the whole
+document. Use `column: "*"` for a whole-record filter. File sources do not
+support source sorting; use `view.sort` to sort the bounded result. Local
+filters do not fetch replacement source rows. See [file input](file-input.md)
+and [large files](large-files.md) for input and scan limits.
 
 ## Column identity
 
-SQLite column keys use the source column name when it is unique. Duplicate names
-use occurrence keys such as `name#1` and `name#2`. Tview rejects an unsuffixed
-duplicate because it cannot identify one column.
+SQLite uses the source column name when unique. Duplicates need occurrence
+keys such as `name#1` and `name#2`; an unsuffixed duplicate is rejected.
 
-Structured column configuration should use exact, case-sensitive canonical JSON
-Pointers such as `/_source/user/email`; keyed-object member names use `@key`,
-regardless of whether its display label is `name` or `_key`. Unambiguous source
-labels remain a fallback; an ambiguous structured label never selects an
-arbitrary column or operation. Missing canonical references remain pending while
-the schema is provisional. When schema discovery completes, missing or ambiguous
-references and invalid operations produce non-fatal, once-only warnings in the
-TUI and on stderr, not in batch stdout. A present numeric filter can still await
-the required numeric profile; definitive unavailability is reported as an
-unavailable operation, not as a missing column. Local edits supersede pending
-saved sort/filter intent; `--sorted false` suppresses saved view sorts, including
-late sorts, but not source order, view filters, or formatting. A column can set
-`label` without changing its canonical identity or raw data. View-level and
-per-column `nulls: first|last` control direction-independent sort placement,
-with the column policy winning over the view policy and `last` as the built-in
-default.
+Structured columns use exact, case-sensitive JSON Pointers such as
+`/_source/user/email`. Keyed-object members use `@key`, regardless of their
+display label. An unambiguous source label is also accepted, but an ambiguous
+label never selects a column or operation. Changing a column's `label` does
+not change its identity or raw value.
+
+Missing references can wait until schema discovery finishes. Tview then
+reports missing or ambiguous references and invalid operations once, without
+stopping the session. Warnings appear in the TUI or on stderr, not batch
+stdout. A numeric filter can wait for a column's numeric profile; if that
+profile is unavailable, Tview warns about the operation rather than a missing
+column.
 
 ## Conditional colors
 
-Column color rules run in order; the first matching rule selects the foreground.
-Match and range rules, fixed and automatic gradients, and identifier colors use
-the same configured rules in the TUI and colored table output. No match keeps
-the theme's ordinary cell foreground. YAML retains configured color strings,
-not computed gradients, identifier indexes, or terminal colors. Colors do not
-change values, sorting, filtering, search, copying, or popups.
+Column color rules run in order. The first match sets the foreground; no
+match leaves the theme's cell color. Rules support matches, ranges, fixed or
+automatic gradients, and identifier colors:
 
 ```yaml
 view:
@@ -177,71 +134,37 @@ view:
         - match:
             true: green
             false: muted
-    prirep:
-      type: string
-      colors:
-        - match:
-            p: darkgreen
-            r: blue
     used_percent:
       type: number
       colors:
         - range:
-            "<10": red
             ">=90": red
         - gradient:
             mode: auto
             steps: 8
             colors: [green, yellow]
-    latency_ms:
-      type: number
-      colors:
-        - gradient:
-            mode: fixed
-            stops:
-              0: green
-              100: yellow
-              500: red
-    ip_address:
-      type: ip
-      colors:
-        - identifiers:
-            colors: auto
-    host:
-      type: string
-      colors:
-        - identifiers:
-            colors: [cyan, "palette(198)", "#25A39AFF"]
 ```
 
-The `identifiers` rule is for string-like discrete values. It assigns each
-unique rendered value in the column, such as an IP address or host name, to a
-stable generated color. `colors: auto` uses the active theme's
-`[identifiers].colors` families; a view can override those families with a color
-array. Each family generates 16 dark-to-light shades, and identifiers cycle
-across families before advancing shades. The darkest shade matches the family's
-ANSI dark/dim foreground color or a brighter value, so it is never darker than
-that color.
+Identifiers color distinct rendered values in a column. `colors: auto`
+uses the active theme's `[identifiers].colors` families, or a view can supply
+its own array. Each family produces 16 dark-to-light shades; values cycle
+across families before moving to lighter shades. See [color
+themes](themes.md) and the [complete conditional-colors
+example](../examples/data/config/views/conditional-colors.yml) for other rules.
 
-Automatic gradients and identifiers use the applicable complete-result profile
-when rendering the complete result, not only visible screen rows. In a table
-preview, their profile uses emitted rows alone: rejected, lookahead, and omitted
-rows do not change emitted foregrounds. The complete profile may use resident
-rendered identifiers or exact store-backed raw identifiers, depending on the
-source path; it does not broaden the source-result limit. Plain table, JSON,
-and JSONL output do not request color-only profiling.
+The TUI and colored table output use the same rules. Automatic gradients and
+identifiers use the full result, or only emitted rows in a table preview.
+They do not extend the source limit. Colors do not alter values, sorting,
+filtering, search, copying, or popups. Plain table, JSON, and JSONL output do
+not profile rows solely for colors.
 
 ## Saving a view
 
-Press `v` to inspect the generated YAML. In that modal, press `s` to save it to
-the loaded view file, or to a placeholder file named from the current input with
-only the last extension replaced by `.yml`. Existing files ask for `y`/`n`
-confirmation. Saves are atomic and create the views directory as needed.
+Press `v` to inspect generated YAML, then `s` in the modal to save it. Tview
+saves to the loaded view file or a file named from the input with only its last
+extension replaced by `.yml`. It asks for `y`/`n` before overwriting a file.
+Saves are atomic and create the views directory if needed.
 
-While a source replacement is pending or after one fails, saving keeps the
-last successfully activated source configuration and the current applied local
-view. It does not save the rejected query or mix source settings across results.
-
-Use the [view schema](../schemas/view.schema.json) for editor validation. See
+Use the [view schema](../schemas/view.schema.json) for editor validation and
 the [conditional-colors example](../examples/data/config/views/conditional-colors.yml)
 for a complete view.

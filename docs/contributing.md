@@ -1,49 +1,42 @@
 ---
 type: Guide
 title: Contributor guide
-description: Ownership, compiler support, checks, and documentation boundaries.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-05T04:25:43Z }
+description: Setup, required checks, and implementation boundaries.
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:44:02Z }
 ---
 
 # Contributor guide
 
-CommandZero maintains this independently released Rust rewrite of Tabview. The
-upstream MIT license and attribution remain in [LICENSE.txt](../LICENSE.txt).
-The Rust library organizes the binary's code and has no separate API stability
-promise. Keep one package unless another consumer needs it or measurements
-justify a dependency split.
+CommandZero maintains this independently released Rust rewrite of Tabview.
+Preserve the upstream [MIT license and attribution](../LICENSE.txt). The library
+organizes the binary's code and makes no separate API stability promise. Keep
+one package unless another consumer or measurements justify a split.
 
 ## Standards adoption
 
-This repository adopts the applicable repository-management standards for its
-Rust CLI and TUI. The local standards bundle starts at
-`~/.agents/memory/repo-man/index.md`, relative to the contributor's home
-directory. Follow the nearest parent AGENTS.md pointer if the location differs.
-Obtain a usable local copy before changing policy. Draft standards do not change
-product commitments. This guide records the standards adopted here.
+Follow the applicable Rust CLI and TUI repository standards. The local bundle
+starts at `~/.agents/memory/repo-man/index.md`, unless the nearest parent
+AGENTS.md points elsewhere. Obtain a usable copy before changing policy.
+Draft standards do not change product commitments; this guide records adoption.
 
 ## Compilers and features
 
-The minimum supported Rust version is 1.90.0. The development and release
-compiler is pinned in [rust-toolchain.toml](../rust-toolchain.toml). Use rustup
-so the pin also governs developer commands. The shared check script explicitly
-selects it, including when a package-manager Cargo installation appears first on
-PATH.
+Use rustup and the compiler pinned in [rust-toolchain.toml](../rust-toolchain.toml).
+Preflight explicitly selects it even when another Cargo appears first on PATH.
+Build and test with the committed lockfile and `--locked`.
 
-Application builds and tests use the committed lockfile with `--locked`. CI
-tests the minimum supported compiler separately. An MSRV increase requires a
-minor version and a changelog entry. Before release, check all supported targets
-and the selected features, including their dependencies.
+The minimum supported Rust version is 1.90.0. CI tests it separately. Raising
+it requires a minor release and changelog entry. Before release, check every
+supported target and selected feature, including dependencies.
 
 Default releases include `saved-views`, `sqlite`, and `clipboard`.
-`elasticsearch` is an opt-in source-build feature. All features coexist.
-Preflight runs default, minimal, and all-feature tests plus compilation of each
-source feature alone. This includes library doctests; no fixed coverage
-percentage is required.
+`elasticsearch` is opt-in. All features coexist. Preflight tests default,
+minimal, and all-feature builds, including doctests, and compiles each source
+feature alone. No fixed coverage percentage is required.
 
 ## Local preflight and CI
 
-Install the versions in [tools-versions.sh](../scripts/tools-versions.sh):
+Install the pinned [tool versions](../scripts/tools-versions.sh):
 
 ```bash
 rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
@@ -53,108 +46,83 @@ npm install --global @fission-ai/openspec@1.11.0
 bash scripts/preflight.sh
 ```
 
-Also install ShellCheck, ripgrep, and Actionlint 1.7.7. CI installs Actionlint
-through the Go toolchain. Bash 3.2 is the script compatibility target. CI calls
-the same entry point. `docs`, `scripts`, `specs`, `rust`, and `msrv` select
-individual check groups. Documentation-only PRs skip Rust compilation, while
-workflow and check-script changes run full preflight. Failure output is
-retained. CI cancels superseded PR runs and caches Cargo dependencies.
+Also install ShellCheck, ripgrep, and Actionlint 1.7.7. Scripts target Bash 3.2.
+CI uses the same preflight entry point and installs Actionlint through Go.
+Pass `docs`, `scripts`, `specs`, `rust`, or `msrv` to run one check group.
+Documentation-only PRs skip compilation; workflow and check-script changes run
+full preflight. CI retains failures, cancels superseded runs, and caches Cargo.
 
-Use Conventional Commits for PR titles and squash commits. Prefer squash merge.
-Keep historical commits unchanged. The required `Compliance` check covers
-documentation, script checks, OpenSpec association, and applicable code checks.
-Configure main-branch protection with the versioned ruleset after the workflows
-exist remotely. The rules require passing checks and resolved review threads,
-with no minimum reviewer count. Maintainers review compatibility and policy
-changes.
+Use Conventional Commits for PR titles and squash commits. Prefer squash merge
+and preserve historical commits. The required `Compliance` check covers docs,
+scripts, OpenSpec associations, and applicable code checks. Configure branch
+protection from the versioned ruleset once workflows exist remotely. Require
+passing checks and resolved threads, with no minimum reviewer count.
+Maintainers review compatibility and policy changes.
 
 ## OpenSpec completion
 
 Every PR body declares `OpenSpec changes: none` or a comma-separated list of
-change IDs. Declare implementation associations even if no spec artifact
-changed. Changed active paths and archive paths are also selected automatically,
-including both sides of renames and deletions. Review the declaration as part of
-PR review.
+change IDs, including implementation associations without changed spec files.
+The gate also selects changed active and archive paths, including renames and
+deletions. Review the declaration and run:
 
 ```bash
 bash scripts/openspec-gate.sh origin/main HEAD add-elasticsearch-source
 ```
 
-The gate compares committed HEAD to its merge base. Associated changes must have
-one archive with completed tasks. Use `OPENSPEC_TELEMETRY=0 openspec archive <change-id> --yes` to validate and apply deltas before merging. The gate runs
-OpenSpec's native `validate --archived` for the selected archives and `validate --specs --strict` for the final specifications. It does not reimplement
-OpenSpec's Markdown parser.
+The gate compares committed HEAD to its merge base. Before merging, archive each
+associated change with completed tasks using
+`OPENSPEC_TELEMETRY=0 openspec archive <change-id> --yes`.
+The gate uses native `validate --archived` and `validate --specs --strict`.
+It never syncs or archives files, and unrelated active work does not block a PR.
 
-Reviewers must check that the affected main requirements and scenarios reflect
-the associated deltas, especially if archiving used `--skip-specs`. Native
-archive task validation does not prove synchronization. A change without spec
-deltas needs a reviewed `no-spec-deltas.md` explanation. Historical archives
-stay as history when a later change updates the same requirement. Unrelated
-active work does not block a PR. The gate never syncs or archives the
-contributor's files.
+Review main requirements against the deltas, especially after `--skip-specs`.
+Archive validation alone does not prove synchronization. Changes without deltas
+need a reviewed `no-spec-deltas.md`. Preserve historical archives when later
+changes update the same requirement.
 
 ## Source, binding, and output boundaries
 
-Keep source requests separate from the committed source configuration. Publish
-that configuration only with a successfully loaded source result and rebuilt
-view; saves and reloads take their source truth from the committed result.
-Reload supersedes pending work, preserves compatible live view state by durable
-source identity, and does not rediscover saved YAML. Latest activation failure
-blocks final interactive export rather than substituting previously visible
-rows. See [SQLite](sqlite.md), [Elasticsearch](elasticsearch.md), and
-[saved views](saved-views.md) for the user-facing boundaries.
+- Commit source configuration only after loading and rebuilding succeed. Saves
+  and reloads use that configuration, not pending requests. Reload supersedes
+  pending work and preserves compatible state by source identity without
+  rediscovering YAML. Latest activation failure must block final export.
+- Use one validated saved-view snapshot per invocation. Apply CLI source
+  precedence before opening, then bind column metadata before sorts and filters,
+  including late columns. Distinguish missing or ambiguous references from
+  unavailable numeric profiles. Deliver each warning once, never on stdout.
+- Prepare output selection, late binding, accepted field presence, and remainder
+  evidence before freezing a complete or prefix projection. Writers only
+  serialize it; they must not fetch rows or mutate viewer settings, stores, or
+  screen state. Sorting, numeric filters, and full schema scans can require full
+  traversal. Local filters must not refill native source limits.
+- Retain shared-store schema deltas after preparation failures and replay them
+  on normal viewer progress. Do not publish partial output or alter frozen presentation.
+- Resolve conditional-color strings consistently for the TUI and colored tables.
+  Preserve aliases and rule order. Keep complete-result and preview profiles
+  separate; plain table, JSON, and JSONL must not profile solely for color.
+  Record color-work measurements in the active change. Never claim unmeasured speedups.
 
-Select and validate one saved-view snapshot for an invocation. Apply CLI source
-precedence before opening, then bind presentation against that result's schema.
-Bind column metadata before sort/filter interpretation, including late
-canonical columns. Distinguish missing and ambiguous references from present
-numeric operations that lack the required profile. Deliver each binding
-warning once without putting it in output stdout.
-
-Keep output selection, late binding, accepted-row field presence, and remainder
-evidence in complete-or-prefix projection preparation. Serialize only the
-frozen projection; writers must not fetch source rows or change live view
-configuration, stores, or screen state. Whole-result sorting, numeric filter
-profiles, and explicit full-schema scans can require complete traversal.
-Source-native limits still bound the result; local filters never refill it.
-Retain schema deltas consumed from a shared store even when preparation fails;
-replay them on the next ordinary viewer progress without publishing partial
-output or changing the frozen view's presentation.
-See [CLI output](cli-contract.md) and [large files](large-files.md).
-
-Resolve conditional colors from configured YAML strings into foregrounds for
-both TUI and colored table output. Keep theme aliases exact, rule order stable,
-and complete-result versus emitted-prefix profile scopes separate. Do not
-profile solely for color in plain table, JSON, or JSONL output. The measured
-color-work evidence belongs to the active OpenSpec change, not this guide;
-do not claim a general speedup without measurement. See
-[themes](themes.md) and [saved views](saved-views.md#conditional-colors).
+See [saved views](saved-views.md), [CLI output](cli-contract.md),
+[large files](large-files.md), and [themes](themes.md) for user-facing behavior.
 
 ## Unsafe code boundary
 
-Rust denies unsafe code by default. Two scoped exceptions exist because the
-standard library does not provide the required OS operations:
+Rust denies unsafe code except for:
 
-1. Windows terminal handle attachment, duplication, and restoration in
-   [terminal.rs](../src/ui/terminal.rs). Owned duplicates must close once, borrowed
-   process handles must remain open, and failed attachment must restore handles.
-2. Unix PTY setup and signal delivery in
-   [interactive_output.rs](../tests/interactive_output.rs), confined to tests.
+1. Windows terminal handles in [terminal.rs](../src/ui/terminal.rs). Close owned
+   duplicates once, keep borrowed process handles open, and restore handles on failure.
+2. Unix PTY setup and signals in [interactive_output.rs](../tests/interactive_output.rs),
+   confined to tests.
 
-New unsafe code outside these scopes is rejected. Changes inside either scope
-need ownership/safety review and tests on that platform. Native Windows is not a
-release target; adding it requires its own validation and support decision.
+Changes in either scope require ownership and safety review plus native tests.
+Reject unsafe code elsewhere. Windows release support requires a separate decision.
 
 ## Documentation bundle
 
-The complete `docs/` directory is a flat OKF 0.2 bundle of authored guides and
-the reserved index. OpenSpec workflow files live in `openspec/`, outside docs
-validation and export. Keep build tools, schemas, and temporary reports outside
-`docs/`.
-
-Run `bash scripts/preflight.sh docs` for the complete bundle. It uses pinned
-OKF, checks local authored links, and checks that every concept appears in the
-index. There is no additional local frontmatter schema. Do not use automatic
-fixes in CI. Preserve imported source bodies and attribution. Link to source
-artifacts and record the author and time of each edit. Record verification only
-for checks that ran.
+`docs/` is a flat OKF 0.2 bundle with an index. Keep OpenSpec files in `openspec/`
+and tools, schemas, and temporary reports outside `docs/`.
+Run `bash scripts/preflight.sh docs` to validate the complete bundle, local links,
+and index coverage. No additional frontmatter schema is required.
+Preserve imported text and attribution, link source artifacts, and record each
+edit's author and time. Record only checks that ran; do not autofix in CI.
