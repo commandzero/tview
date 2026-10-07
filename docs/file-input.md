@@ -91,6 +91,9 @@ TOON column labels retain their complete nested context relative to the selected
 table: `temp{min,max}` displays as `temp.min` and `temp.max`, including fields
 discovered after the initial schema scan. Canonical column keys remain
 `/temp/min` and `/temp/max`. JSON and NDJSON keep their compact label policy.
+If a later field would reuse an existing label, such as the synthetic entry-key
+column's `name`, that field uses its canonical pointer label (`/name`) instead.
+Previously assigned labels stay fixed.
 
 Signed 64-bit integers remain exact. Larger integers and decimal numbers use
 floating-point approximation; very small exponents can underflow to zero.

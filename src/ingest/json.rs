@@ -943,7 +943,16 @@ impl JsonSchema {
             if self.labels_assigned {
                 column.display_name = match (identity, self.qualified_labels) {
                     (ColumnSourceIdentity::StructuredPath(pointer), true) => {
-                        qualified_label(pointer)
+                        let label = qualified_label(pointer);
+                        if self
+                            .columns
+                            .iter()
+                            .any(|column| column.display_name == label)
+                        {
+                            pointer.as_str().to_owned()
+                        } else {
+                            label
+                        }
                     }
                     _ => shortest_nonconflicting_label(
                         path,

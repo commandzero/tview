@@ -100,6 +100,7 @@ The system SHALL read TOON 4.1 UTF-8 documents in strict mode through its typed 
 - **WHEN** a TOON document contains tabular arrays with nested header fields, comments, an initial BOM, or CRLF
 - **THEN** the reader preserves ordered structured column identities and native null, boolean, numeric, and text cells
 - **AND** displayed TOON column labels retain the complete nested field path relative to the selected table, including fields discovered after bounded schema discovery
+- **AND** a later field whose qualified label conflicts with an existing column uses its canonical pointer label without renaming previously assigned labels
 
 #### Scenario: Selected keyed objects
 - **WHEN** a TOON object is selected with `--json-path` and `--object-mode entries`

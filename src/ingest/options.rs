@@ -411,7 +411,7 @@ impl OpenOptions {
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SourceOptionError {
-    #[error("invalid input format '{0}' (expected auto, delimited, json, ndjson, toon, sqlite, or elasticsearch when enabled)")]
+    #[error("invalid input format '{0}' (expected auto, delimited, json, ndjson, toon, or an enabled native source format)")]
     InvalidFormat(String),
     #[error("invalid schema scan policy '{0}' (expected default or full)")]
     InvalidSchemaScan(String),

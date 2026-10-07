@@ -95,6 +95,61 @@ fn later_toon_columns_keep_nested_context_after_bounded_schema_scan() {
 }
 
 #[test]
+fn later_toon_name_field_does_not_rename_or_collide_with_entry_key() {
+    let root = tempfile::tempdir().expect("test directory");
+    let path = root.path().join("entries.toon");
+    std::fs::write(&path, "alpha:\n  id: 1\nbeta:\n  name: Berlin\n").expect("write TOON");
+    let mut table = open_source(
+        InputSource::Path(path),
+        &OpenOptions {
+            object_mode: tview::ingest::ObjectMode::Entries,
+            schema_scan_bytes: 1,
+            ..OpenOptions::default()
+        },
+    )
+    .expect("open entries")
+    .into_implicit_table()
+    .expect("table");
+    assert_eq!(table.definition.columns[0].display_name, "name");
+    let progress = table
+        .store
+        .ensure_indexed_through(RowIndex(1))
+        .expect("discover name field");
+    table
+        .definition
+        .apply_delta(progress.schema_delta)
+        .expect("apply schema");
+    let labels: Vec<_> = table
+        .definition
+        .columns
+        .iter()
+        .map(|column| column.display_name.as_str())
+        .collect();
+    assert_eq!(labels, ["name", "id", "/name"]);
+    assert_eq!(
+        table.definition.columns[0].source_identity,
+        ColumnSourceIdentity::ObjectKey
+    );
+    assert_eq!(
+        table.definition.columns[2].source_identity,
+        ColumnSourceIdentity::StructuredPath("/name".parse().expect("path"))
+    );
+    assert_eq!(
+        table
+            .store
+            .row(RowIndex(1))
+            .expect("second row")
+            .expect("present")
+            .cells,
+        [
+            CellValue::Text("beta".into()),
+            CellValue::Null,
+            CellValue::Text("Berlin".into())
+        ]
+    );
+}
+
+#[test]
 fn toon_extension_decodes_nested_tabular_cells_with_comments_bom_and_crlf() {
     let root = tempfile::tempdir().expect("test directory");
     let path = root.path().join("people.ToOn");
