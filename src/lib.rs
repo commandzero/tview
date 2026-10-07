@@ -598,7 +598,7 @@ fn full_schema_scan_status(
     options: &ingest::OpenOptions,
 ) -> Option<String> {
     let structured_hint = match options.format {
-        ingest::InputFormat::Json | ingest::InputFormat::Ndjson => true,
+        ingest::InputFormat::Json | ingest::InputFormat::Ndjson | ingest::InputFormat::Toon => true,
         ingest::InputFormat::Delimited => false,
         #[cfg(feature = "sqlite")]
         ingest::InputFormat::Sqlite => false,
@@ -615,7 +615,7 @@ fn full_schema_scan_status(
                             .is_some_and(|extension| {
                                 matches!(
                                     extension.to_ascii_lowercase().as_str(),
-                                    "json" | "ndjson" | "jsonl"
+                                    "json" | "ndjson" | "jsonl" | "toon"
                                 )
                             })
                 )
@@ -2642,6 +2642,21 @@ mod tests {
             full_schema_scan_status(&source, &options).as_deref(),
             Some("Scanning full schema for response.json")
         );
+        let toon = ingest::source::InputSource::Path("response.toon".into());
+        assert_eq!(
+            full_schema_scan_status(&toon, &options).as_deref(),
+            Some("Scanning full schema for response.toon")
+        );
+        let explicit_toon = ingest::OpenOptions {
+            format: ingest::InputFormat::Toon,
+            ..options.clone()
+        };
+        let unknown_toon = ingest::source::InputSource::Path("response.data".into());
+        assert_eq!(
+            full_schema_scan_status(&unknown_toon, &explicit_toon).as_deref(),
+            Some("Scanning full schema for response.data")
+        );
+
         assert!(full_schema_scan_status(&source, &ingest::OpenOptions::default()).is_none());
 
         let delimited = ingest::source::InputSource::Path("data.csv".into());

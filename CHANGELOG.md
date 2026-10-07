@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Read TOON 4.1 files and stdin, preserving nested column labels and keyed objects.
+
 ### Fixed
 
 - Saving or reloading after a failed source query keeps the last successful source settings (#13).

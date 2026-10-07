@@ -129,9 +129,10 @@ can preserve cursor and marks across a compatible replacement; otherwise
 row-bound state resets. Reloading stdin remains a no-op; a reload error ends
 the interactive session.
 
-For delimited, JSON, and NDJSON sources, saved source filters stream decoded
-logical records before the source limit. Use `column: "*"` for a grep-style
-whole-record filter. Quoted multiline CSV fields remain part of one logical
+For file sources, saved source filters run on decoded logical records before the
+source limit. Delimited, JSON, and NDJSON readers stream records; TOON validates
+the complete document first. Use `column: "*"` for a grep-style whole-record
+filter. Quoted multiline CSV fields remain part of one logical
 record. File sources do not offer source sorting because it would require
 loading the full input. Use `view.sort` to sort the bounded result.
 

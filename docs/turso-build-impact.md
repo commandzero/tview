@@ -9,7 +9,7 @@ generated: { by: openai-codex/gpt-6-astra, at: 2026-09-20T01:02:26Z }
 
 ## Dependencies
 
-The default `sqlite` feature enables Turso 0.7.2 and its mimalloc allocator.
+The default `sqlite` feature enables Turso 0.8.2 and its mimalloc allocator.
 Turso's other default features, including FTS, are disabled. SQLite and file
 sources run background queries on the shared Tokio multi-thread runtime.
 Disabling `sqlite` removes Turso and mimalloc, but retains Tokio.

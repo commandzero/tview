@@ -106,6 +106,7 @@ impl SourceAdapter for JsonAdapter {
                     options,
                     parsed.object_mode,
                     parsed.warnings,
+                    false,
                 )
             }
             InputFormat::Ndjson => open_json_rows(
@@ -261,26 +262,53 @@ fn detection_sample(entries: &[RawObjectEntry]) -> anyhow::Result<Vec<Value>> {
 }
 
 fn values_are_keyed_object(sampled: &[Value]) -> bool {
-    if sampled.len() < 3 || !sampled.iter().all(Value::is_object) {
+    values_are_keyed_object_iter(sampled.iter())
+}
+
+fn values_are_keyed_object_iter<'a>(sampled: impl ExactSizeIterator<Item = &'a Value>) -> bool {
+    let sample_len = sampled.len();
+    if sample_len < 3 {
         return false;
     }
-    let mut counts = HashMap::<(String, JsonValueKind), usize>::new();
+    let mut counts = HashMap::<(&str, JsonValueKind), usize>::new();
     for value in sampled {
         let Value::Object(object) = value else {
             return false;
         };
         for (key, value) in object {
             *counts
-                .entry((key.clone(), json_value_kind(value)))
+                .entry((key.as_str(), json_value_kind(value)))
                 .or_default() += 1;
         }
     }
-    let threshold = sampled.len().saturating_mul(3).div_ceil(4);
+    let threshold = sample_len.saturating_mul(3).div_ceil(4);
     counts.values().any(|count| *count >= threshold)
 }
 
 fn detect_keyed_object(entries: &[RawObjectEntry]) -> anyhow::Result<bool> {
     Ok(values_are_keyed_object(&detection_sample(entries)?))
+}
+
+fn decoded_entry_bytes(key: &str, value: &Value) -> anyhow::Result<u64> {
+    Ok(json_encoded_len(key)? + 1 + json_encoded_len(value)?)
+}
+
+fn detect_decoded_keyed_object(entries: &serde_json::Map<String, Value>) -> anyhow::Result<bool> {
+    if entries.len() < 3 {
+        return Ok(false);
+    }
+    let mut sample_len = 0;
+    let mut bytes = 0_u64;
+    for (key, value) in entries.iter().take(OBJECT_DETECTION_MAX_ENTRIES) {
+        sample_len += 1;
+        bytes = bytes.saturating_add(decoded_entry_bytes(key, value)?);
+        if bytes >= OBJECT_DETECTION_MAX_BYTES {
+            break;
+        }
+    }
+    Ok(values_are_keyed_object_iter(
+        entries.values().take(sample_len),
+    ))
 }
 
 fn flatten_object_record(entries: &[RawObjectEntry]) -> anyhow::Result<FlatRow> {
@@ -383,8 +411,25 @@ fn resolve_pointer<'a>(
     Ok(selected)
 }
 
+fn json_encoded_len<T: serde::Serialize + ?Sized>(value: &T) -> anyhow::Result<u64> {
+    struct ByteCount(u64);
+    impl std::io::Write for ByteCount {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len() as u64);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = ByteCount(0);
+    serde_json::to_writer(&mut count, value)?;
+    Ok(count.0)
+}
+
 fn flatten_row(value: &Value) -> anyhow::Result<FlatRow> {
-    let source_bytes = serde_json::to_vec(value)?.len() as u64;
+    let source_bytes = json_encoded_len(value)?;
     let mut cells = Vec::new();
     match value {
         Value::Object(object) => flatten_object(object, "", &mut cells)?,
@@ -453,13 +498,63 @@ fn cell_from_value(value: &Value) -> anyhow::Result<CellValue> {
         Value::Array(_) | Value::Object(_) => CellValue::Json(serde_json::to_string(value)?),
     })
 }
+/// Project a fully decoded structured value without re-serializing it through JSON.
+/// TOON consumes the complete input before calling this, including in preview mode.
+pub(super) fn open_decoded_toon(
+    root: &Value,
+    display_name: String,
+    options: &OpenOptions,
+) -> anyhow::Result<OpenedSource> {
+    let selected = resolve_pointer(root, options.json_path.as_ref())?;
+    let resolution = resolve_selected_shape(
+        match selected {
+            Value::Array(_) => SelectedValueShape::Array,
+            Value::Object(_) => SelectedValueShape::Object,
+            _ => SelectedValueShape::Scalar,
+        },
+        options.object_mode,
+        options.object_mode_origin,
+        matches!(selected, Value::Object(entries)
+            if options.object_mode == ObjectMode::Auto
+                && detect_decoded_keyed_object(entries)?),
+    )?;
+    let rows = match (selected, resolution.table_shape) {
+        (Value::Array(values), Some(SelectedTableShape::ArrayRows)) => values
+            .iter()
+            .map(flatten_row)
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        (value @ Value::Object(_), Some(SelectedTableShape::ObjectRecord)) => {
+            vec![flatten_row(value)?]
+        }
+        (Value::Object(entries), Some(SelectedTableShape::ObjectEntries)) => entries
+            .iter()
+            .map(|(key, value)| flatten_keyed_entry(key, value, decoded_entry_bytes(key, value)?))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        (Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_), None) => {
+            let message = "TOON starting path does not identify a tabular object or array";
+            if let Some(warning) = resolution.warning {
+                anyhow::bail!("{warning}; {message}");
+            }
+            anyhow::bail!(message);
+        }
+        _ => unreachable!("selected shape resolution must match decoded value"),
+    };
+    open_json_rows_with_metadata(
+        rows,
+        display_name,
+        options,
+        resolution.object_mode,
+        resolution.warning.into_iter().collect(),
+        true,
+    )
+}
 
 fn open_json_rows(
     rows: Vec<FlatRow>,
     display_name: String,
     options: &OpenOptions,
 ) -> anyhow::Result<OpenedSource> {
-    open_json_rows_with_metadata(rows, display_name, options, None, Vec::new())
+    open_json_rows_with_metadata(rows, display_name, options, None, Vec::new(), false)
 }
 
 fn open_json_rows_with_metadata(
@@ -468,9 +563,11 @@ fn open_json_rows_with_metadata(
     options: &OpenOptions,
     object_mode: Option<ObjectModeResolution>,
     warnings: Vec<String>,
+    qualified_labels: bool,
 ) -> anyhow::Result<OpenedSource> {
     let generation = SourceGeneration::new();
     let mut schema = JsonSchema::new(generation);
+    schema.qualified_labels = qualified_labels;
     let mut bytes_scanned = 0_u64;
     let initial_rows = match options.schema_scan {
         SchemaScan::Full => rows.len(),
@@ -803,6 +900,7 @@ struct JsonSchema {
     columns: Vec<ColumnDefinition>,
     indices: HashMap<String, usize>,
     labels_assigned: bool,
+    qualified_labels: bool,
 }
 
 impl JsonSchema {
@@ -812,6 +910,7 @@ impl JsonSchema {
             columns: Vec::new(),
             indices: HashMap::new(),
             labels_assigned: false,
+            qualified_labels: false,
         }
     }
 
@@ -842,12 +941,17 @@ impl JsonSchema {
                 type_origin: TypeOrigin::Inferred,
             };
             if self.labels_assigned {
-                column.display_name = shortest_nonconflicting_label(
-                    path,
-                    self.columns
-                        .iter()
-                        .map(|column| column.display_name.as_str()),
-                );
+                column.display_name = match (identity, self.qualified_labels) {
+                    (ColumnSourceIdentity::StructuredPath(pointer), true) => {
+                        qualified_label(pointer)
+                    }
+                    _ => shortest_nonconflicting_label(
+                        path,
+                        self.columns
+                            .iter()
+                            .map(|column| column.display_name.as_str()),
+                    ),
+                };
             }
             self.indices.insert(path.clone(), ordinal);
             self.columns.push(column.clone());
@@ -857,22 +961,28 @@ impl JsonSchema {
     }
 
     fn assign_initial_labels(&mut self) {
-        let paths = self
-            .columns
-            .iter()
-            .filter_map(|column| match &column.source_identity {
-                ColumnSourceIdentity::StructuredPath(path) => Some(path.as_str().to_owned()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let paths = if self.qualified_labels {
+            Vec::new()
+        } else {
+            self.columns
+                .iter()
+                .filter_map(|column| match &column.source_identity {
+                    ColumnSourceIdentity::StructuredPath(path) => Some(path.as_str().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
         let mut child_uses_name = false;
         for column in &mut self.columns {
             column.display_name = match &column.source_identity {
                 ColumnSourceIdentity::Positional(index) => format!("Column {}", index + 1),
                 ColumnSourceIdentity::ObjectKey => continue,
                 ColumnSourceIdentity::StructuredPath(path) => {
-                    let label =
-                        shortest_unique_label(path.as_str(), paths.iter().map(String::as_str));
+                    let label = if self.qualified_labels {
+                        qualified_label(path)
+                    } else {
+                        shortest_unique_label(path.as_str(), paths.iter().map(String::as_str))
+                    };
                     child_uses_name |= label == "name";
                     label
                 }
@@ -888,6 +998,22 @@ impl JsonSchema {
             key.display_name = if child_uses_name { "_key" } else { "name" }.to_owned();
         }
         self.labels_assigned = true;
+    }
+}
+
+fn qualified_label(path: &JsonPointer) -> String {
+    let mut label = String::new();
+    for segment in path.segments() {
+        let segment = friendly_segment(segment);
+        if !label.is_empty() && !segment.starts_with('[') {
+            label.push('.');
+        }
+        label.push_str(&segment);
+    }
+    if label.is_empty() {
+        "value".to_owned()
+    } else {
+        label
     }
 }
 
@@ -929,24 +1055,24 @@ fn label_segments(path: &str) -> Vec<String> {
             pointer
                 .segments()
                 .iter()
-                .map(|segment| friendly_segment(segment))
+                .map(|segment| friendly_segment(segment).into_owned())
                 .collect()
         })
         .unwrap_or_else(|_| vec![path.to_owned()])
 }
 
-fn friendly_segment(segment: &str) -> String {
+fn friendly_segment(segment: &str) -> std::borrow::Cow<'_, str> {
     if !segment.is_empty()
         && segment
             .chars()
             .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-'))
     {
-        segment.to_owned()
+        std::borrow::Cow::Borrowed(segment)
     } else {
-        format!(
+        std::borrow::Cow::Owned(format!(
             "[{}]",
             serde_json::to_string(segment).unwrap_or_else(|_| "\"?\"".to_owned())
-        )
+        ))
     }
 }
 
@@ -1078,6 +1204,7 @@ fn open_lazy_json_object(
             options,
             resolution.object_mode,
             Vec::new(),
+            false,
         );
     };
 
@@ -2142,6 +2269,7 @@ mod tests {
             &options,
             parsed.object_mode,
             parsed.warnings,
+            false,
         )?
         .into_implicit_table()
     }

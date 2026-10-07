@@ -99,6 +99,10 @@ Sorting uses the saved view's sort keys; without any, `-t 10` retains source
 order. Sorting may read the full file before returning the top rows, whereas
 `-p 10` can stop early. Neither shortcut changes filters or native source sorting.
 
+TOON input is fully decoded and strictly validated before a preview is limited.
+Unlike streaming delimited and JSON/NDJSON previews, TOON previews do not stop
+reading early or skip validation of the unshown suffix.
+
 `-n 30` is the short form of `--top-lines 30`. The limit counts data rows after
 source and view filters. The header and remaining-row summary are extra lines.
 Omitting the limit keeps full output. The count must be a positive integer.

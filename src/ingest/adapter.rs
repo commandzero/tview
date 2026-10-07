@@ -8,7 +8,7 @@ use super::source::InputSource;
 use super::ElasticsearchAdapter;
 #[cfg(feature = "sqlite")]
 use super::SqliteAdapter;
-use super::{DelimitedAdapter, JsonAdapter};
+use super::{DelimitedAdapter, JsonAdapter, ToonAdapter};
 use super::{InputFormat, ObjectMode, ObjectModeOrigin, ObjectModeResolution, OpenOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -292,6 +292,7 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
         InputFormat::Delimited => DelimitedAdapter.open(source, &effective_options),
         InputFormat::Json => JsonAdapter::json().open(source, &effective_options),
         InputFormat::Ndjson => JsonAdapter::ndjson().open(source, &effective_options),
+        InputFormat::Toon => ToonAdapter.open(source, &effective_options),
         #[cfg(feature = "sqlite")]
         InputFormat::Sqlite => SqliteAdapter.open(source, &effective_options),
         #[cfg(feature = "elasticsearch")]
@@ -432,6 +433,11 @@ fn resolve_structured_options(detected: InputFormat, options: &OpenOptions) -> I
 
 fn resolve_format(options: &OpenOptions, source: &InputSource, sample: &[u8]) -> InputFormat {
     if options.format == InputFormat::Auto && has_delimited_options(options) {
+        if let InputSource::Path(path) = source {
+            if format_from_extension(path) == Some(InputFormat::Toon) {
+                return InputFormat::Toon;
+            }
+        }
         if has_sqlite_signature(sample) {
             #[cfg(feature = "sqlite")]
             return InputFormat::Sqlite;
@@ -489,6 +495,7 @@ fn format_from_extension(path: &Path) -> Option<InputFormat> {
     match extension.as_str() {
         "json" => Some(InputFormat::Json),
         "ndjson" | "jsonl" => Some(InputFormat::Ndjson),
+        "toon" => Some(InputFormat::Toon),
         _ => None,
     }
 }

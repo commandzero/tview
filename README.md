@@ -1,7 +1,7 @@
 # Tview
 
-Browse delimited text, JSON, NDJSON, SQLite databases, and Elasticsearch in your
-terminal. Search, sort, filter, and hide columns, then save the view or export
+Browse delimited text, JSON, NDJSON, TOON 4.1, SQLite databases, and Elasticsearch
+in your terminal. Search, sort, filter, and hide columns, then save the view or export
 the displayed data.
 
 Tview is an independent Rust rewrite of [Tabview](https://github.com/Tabviewer/tabview).
@@ -26,6 +26,7 @@ support with `--features elasticsearch`. See
 tview data.csv
 tview records.ndjson
 tview response.json --json-path /hits/hits
+tview records.toon
 tview examples/data/us-counties.sqlite3
 tview - < data.csv
 ```
