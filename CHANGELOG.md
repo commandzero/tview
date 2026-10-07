@@ -4,7 +4,7 @@
 
 ### Added
 
-- Read TOON 4.1 files and stdin, preserving nested column labels and keyed objects.
+- Read TOON 4.1 files and stdin, preserving nested column labels and keyed objects (#14).
 
 ### Fixed
 
