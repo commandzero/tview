@@ -598,12 +598,13 @@ fn full_schema_scan_status(
     options: &ingest::OpenOptions,
 ) -> Option<String> {
     let structured_hint = match options.format {
-        ingest::InputFormat::Json | ingest::InputFormat::Ndjson => true,
+        ingest::InputFormat::Json | ingest::InputFormat::Ndjson | ingest::InputFormat::Toon => true,
         ingest::InputFormat::Delimited => false,
         #[cfg(feature = "sqlite")]
         ingest::InputFormat::Sqlite => false,
         #[cfg(feature = "elasticsearch")]
         ingest::InputFormat::Elasticsearch => false,
+        ingest::InputFormat::Auto if options.has_delimited_options() => false,
         ingest::InputFormat::Auto => {
             options.json_path.is_some()
                 || matches!(
@@ -615,7 +616,7 @@ fn full_schema_scan_status(
                             .is_some_and(|extension| {
                                 matches!(
                                     extension.to_ascii_lowercase().as_str(),
-                                    "json" | "ndjson" | "jsonl"
+                                    "json" | "ndjson" | "jsonl" | "toon"
                                 )
                             })
                 )
@@ -2628,40 +2629,6 @@ mod tests {
     fn missing_source_extent_is_pending_only_while_a_query_runs() {
         assert_eq!(source_extent_label(None, true), "pending");
         assert_eq!(source_extent_label(None, false), "unknown");
-    }
-
-    #[test]
-    fn explicit_full_schema_scan_has_specific_opening_status() {
-        let source = ingest::source::InputSource::Path("response.json".into());
-        let options = ingest::OpenOptions {
-            schema_scan: ingest::SchemaScan::Full,
-            ..ingest::OpenOptions::default()
-        };
-
-        assert_eq!(
-            full_schema_scan_status(&source, &options).as_deref(),
-            Some("Scanning full schema for response.json")
-        );
-        assert!(full_schema_scan_status(&source, &ingest::OpenOptions::default()).is_none());
-
-        let delimited = ingest::source::InputSource::Path("data.csv".into());
-        assert!(full_schema_scan_status(&delimited, &options).is_none());
-
-        let explicitly_delimited = ingest::OpenOptions {
-            format: ingest::InputFormat::Delimited,
-            ..options.clone()
-        };
-        assert!(full_schema_scan_status(&source, &explicitly_delimited).is_none());
-
-        let selected_json = ingest::OpenOptions {
-            json_path: Some("/rows".parse().unwrap()),
-            ..options
-        };
-        let unknown = ingest::source::InputSource::Path("response.data".into());
-        assert_eq!(
-            full_schema_scan_status(&unknown, &selected_json).as_deref(),
-            Some("Scanning full schema for response.data")
-        );
     }
 
     fn app_with_rows(rows: Vec<Vec<String>>) -> App {

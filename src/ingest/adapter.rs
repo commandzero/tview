@@ -8,7 +8,7 @@ use super::source::InputSource;
 use super::ElasticsearchAdapter;
 #[cfg(feature = "sqlite")]
 use super::SqliteAdapter;
-use super::{DelimitedAdapter, JsonAdapter};
+use super::{DelimitedAdapter, JsonAdapter, ToonAdapter};
 use super::{InputFormat, ObjectMode, ObjectModeOrigin, ObjectModeResolution, OpenOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -247,7 +247,7 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
         anyhow::bail!("the resolved {resolved} source does not support native queries");
     }
     if sqlite {
-        if has_delimited_options(options) {
+        if options.has_delimited_options() {
             anyhow::bail!(
                 "encoding, delimiter, quoting, and quote-character options cannot be used with SQLite input"
             );
@@ -260,7 +260,7 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
         if !matches!(&source, InputSource::Url(url) if matches!(url.scheme(), "http" | "https")) {
             anyhow::bail!("Elasticsearch input requires an HTTP(S) endpoint target");
         }
-        if has_delimited_options(options)
+        if options.has_delimited_options()
             || options.json_path.is_some()
             || options.object_mode != ObjectMode::Auto
         {
@@ -292,6 +292,7 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
         InputFormat::Delimited => DelimitedAdapter.open(source, &effective_options),
         InputFormat::Json => JsonAdapter::json().open(source, &effective_options),
         InputFormat::Ndjson => JsonAdapter::ndjson().open(source, &effective_options),
+        InputFormat::Toon => ToonAdapter.open(source, &effective_options),
         #[cfg(feature = "sqlite")]
         InputFormat::Sqlite => SqliteAdapter.open(source, &effective_options),
         #[cfg(feature = "elasticsearch")]
@@ -431,7 +432,7 @@ fn resolve_structured_options(detected: InputFormat, options: &OpenOptions) -> I
 }
 
 fn resolve_format(options: &OpenOptions, source: &InputSource, sample: &[u8]) -> InputFormat {
-    if options.format == InputFormat::Auto && has_delimited_options(options) {
+    if options.format == InputFormat::Auto && options.has_delimited_options() {
         if has_sqlite_signature(sample) {
             #[cfg(feature = "sqlite")]
             return InputFormat::Sqlite;
@@ -439,13 +440,6 @@ fn resolve_format(options: &OpenOptions, source: &InputSource, sample: &[u8]) ->
         return InputFormat::Delimited;
     }
     FormatResolver::resolve(options.format, source, sample)
-}
-
-fn has_delimited_options(options: &OpenOptions) -> bool {
-    options.delimited.encoding.is_some()
-        || options.delimited.delimiter.is_some()
-        || options.delimited.quoting.is_some()
-        || options.delimited.quote_char != b'"'
 }
 
 fn has_sqlite_signature(sample: &[u8]) -> bool {
@@ -489,6 +483,7 @@ fn format_from_extension(path: &Path) -> Option<InputFormat> {
     match extension.as_str() {
         "json" => Some(InputFormat::Json),
         "ndjson" | "jsonl" => Some(InputFormat::Ndjson),
+        "toon" => Some(InputFormat::Toon),
         _ => None,
     }
 }

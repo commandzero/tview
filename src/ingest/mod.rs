@@ -8,6 +8,7 @@ pub mod source;
 #[cfg(feature = "sqlite")]
 mod sqlite;
 mod streaming_json;
+mod toon;
 
 pub use adapter::{
     open_source, FormatResolver, OpenedSource, OpenedTable, ProbeResult, RelationAvailability,
@@ -28,6 +29,7 @@ pub use options::{
 };
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteAdapter;
+pub use toon::ToonAdapter;
 
 use std::borrow::Cow;
 use std::env;

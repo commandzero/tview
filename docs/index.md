@@ -10,7 +10,7 @@ table.
 ## Using Tview
 
 - [Installation](installation.md) - Cargo installation, optional features, and local builds.
-- [File input](file-input.md) - Delimited text, JSON, NDJSON, format detection, and nested data.
+- [File input](file-input.md) - Delimited text, JSON, NDJSON, TOON, format detection, and nested data.
 - [SQLite sources](sqlite.md) - Read-only database browsing, table selection, and source queries.
 - [Elasticsearch sources](elasticsearch.md) - ES|QL queries, index selection, authentication, and source limits.
 - [Keybindings](keybindings.md) - Navigation, search, sorting, filters, and column controls.

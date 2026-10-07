@@ -143,7 +143,7 @@ When compiled with the `saved-views` feature, the Rust executable SHALL accept s
 - **THEN** the saved view override arguments are not part of the supported command-line surface
 
 ### Requirement: Format-neutral object mode option
-The Rust executable SHALL accept `--object-mode auto|record|entries` and use `auto` when omitted. The shared CLI and source-option names SHALL be independent of any one serialization format so object-capable adapters, including future YAML and TOON adapters, can reuse them. After format resolution and structured-value selection, an adapter SHALL apply the mode only to a selected object/map and SHALL reject explicit incompatible formats or selected shapes clearly. This option SHALL NOT alter stdin buffering or imply an input format.
+The Rust executable SHALL accept `--object-mode auto|record|entries` and use `auto` when omitted. The shared CLI and source-option names SHALL be independent of any one serialization format so object-capable JSON and TOON adapters, and future adapters such as YAML, can reuse them. After format resolution and structured-value selection, an adapter SHALL apply the mode only to a selected object/map and SHALL reject explicit incompatible formats or selected shapes clearly. This option SHALL NOT alter stdin buffering or imply an input format.
 
 #### Scenario: Force keyed entries
 - **WHEN** a user runs `tview --format json --object-mode entries repositories.json`

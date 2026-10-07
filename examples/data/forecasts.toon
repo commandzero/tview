@@ -1,0 +1,9 @@
+location:
+  city: Berlin
+  country: DE
+  units: metric
+alerts[2]: frost,wind
+forecast[3]{day,temp{min,max},condition,rainChance}:
+  Mon,-2,4,snow,80
+  Tue,1,7,cloudy,20
+  Wed,3,11,sunny,5

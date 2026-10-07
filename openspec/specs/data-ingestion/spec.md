@@ -92,3 +92,37 @@ Format resolution SHALL use explicit CLI or saved format first, then an unambigu
 #### Scenario: Local format probing remains
 - **WHEN** the target is a local path without an explicit format
 - **THEN** existing signature, extension, and bounded content probing behavior remains authoritative
+
+### Requirement: Strict TOON 4.1 input
+The system SHALL read TOON 4.1 UTF-8 documents in strict mode through its typed structured-table pipeline. Under `auto`, a `.toon` extension SHALL select TOON without ambiguous content probing unless delimited-only options override extension detection; explicit `--format toon` SHALL support local files and stdin. Plain stdin under `auto` SHALL retain its delimited default. TOON output SHALL NOT be added by the reader.
+
+#### Scenario: Explicit delimited options override extension detection
+- **WHEN** a local file has a `.toon` extension, the selected format is `auto`, and delimited-only options are supplied
+- **THEN** the reader selects delimited input rather than TOON, subject to the existing SQLite signature precedence
+
+#### Scenario: Nested tabular input
+- **WHEN** a TOON document contains tabular arrays with nested header fields, comments, an initial BOM, or CRLF
+- **THEN** the reader preserves ordered structured column identities and native null, boolean, numeric, and text cells
+- **AND** displayed TOON column labels retain the complete nested field path relative to the selected table, including fields discovered after bounded schema discovery
+- **AND** a later field whose qualified label conflicts with an existing column uses its canonical pointer label without renaming previously assigned labels
+
+#### Scenario: Selected keyed objects
+- **WHEN** a TOON object is selected with `--json-path` and `--object-mode entries`
+- **THEN** its direct members become rows with synthetic `@key` identity using the shared object-mode rules
+- **AND** automatic detection uses the shared three-member minimum, 64-entry maximum, and 1 MiB logical-entry byte budget
+
+#### Scenario: Malformed or unrepresentable input
+- **WHEN** TOON input has invalid UTF-8, strict structural errors, duplicate keys or header fields, mismatched counts or widths, or nonfinite numeric overflow
+- **THEN** preparation fails before serialized output
+- **AND** signed 64-bit integers remain exact, other finite numbers may use floating approximation, and numeric underflow may become zero
+
+#### Scenario: Eager validation and schema discovery
+- **WHEN** a TOON source is opened with a preview, source limit, or bounded schema scan
+- **THEN** the reader decodes and validates the complete document before limiting rows
+- **AND** schema discovery measures compact JSON-equivalent logical row bytes rather than evenly distributing file bytes
+
+#### Scenario: Filtered preview schema
+- **WHEN** a TOON preview uses source filters
+- **THEN** displayed columns exclude fields present only in rejected rows
+- **AND** a bounded preview discovers fields from its accepted prefix
+- **AND** a full-schema preview includes fields from later accepted rows only within the source cap, without relaxing full-document validation

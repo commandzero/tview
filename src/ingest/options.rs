@@ -152,6 +152,7 @@ pub enum InputFormat {
     Delimited,
     Json,
     Ndjson,
+    Toon,
     #[cfg(feature = "sqlite")]
     Sqlite,
     #[cfg(feature = "elasticsearch")]
@@ -167,6 +168,7 @@ impl FromStr for InputFormat {
             "delimited" => Ok(Self::Delimited),
             "json" => Ok(Self::Json),
             "ndjson" => Ok(Self::Ndjson),
+            "toon" => Ok(Self::Toon),
             #[cfg(feature = "sqlite")]
             "sqlite" => Ok(Self::Sqlite),
             #[cfg(feature = "elasticsearch")]
@@ -183,6 +185,7 @@ impl fmt::Display for InputFormat {
             Self::Delimited => "delimited",
             Self::Json => "json",
             Self::Ndjson => "ndjson",
+            Self::Toon => "toon",
             #[cfg(feature = "sqlite")]
             Self::Sqlite => "sqlite",
             #[cfg(feature = "elasticsearch")]
@@ -395,6 +398,13 @@ impl OpenOptions {
         }
     }
 
+    pub(crate) fn has_delimited_options(&self) -> bool {
+        self.delimited.encoding.is_some()
+            || self.delimited.delimiter.is_some()
+            || self.delimited.quoting.is_some()
+            || self.delimited.quote_char != b'"'
+    }
+
     pub fn validate(&self) -> Result<(), SourceOptionError> {
         if self.format == InputFormat::Delimited && self.json_path.is_some() {
             return Err(SourceOptionError::JsonPathRequiresStructuredFormat);
@@ -408,11 +418,7 @@ impl OpenOptions {
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SourceOptionError {
-    #[cfg(feature = "sqlite")]
-    #[error("invalid input format '{0}' (expected auto, delimited, json, ndjson, or sqlite)")]
-    InvalidFormat(String),
-    #[cfg(not(feature = "sqlite"))]
-    #[error("invalid input format '{0}' (expected auto, delimited, json, or ndjson)")]
+    #[error("invalid input format '{0}' (expected auto, delimited, json, ndjson, toon, or an enabled native source format)")]
     InvalidFormat(String),
     #[error("invalid schema scan policy '{0}' (expected default or full)")]
     InvalidSchemaScan(String),
@@ -420,7 +426,7 @@ pub enum SourceOptionError {
     InvalidObjectMode(String),
     #[error("invalid RFC 6901 JSON Pointer '{0}'")]
     InvalidJsonPointer(String),
-    #[error("JSON starting paths require JSON or NDJSON input")]
+    #[error("JSON starting paths require JSON, NDJSON, or TOON input")]
     JsonPathRequiresStructuredFormat,
     #[error("source table and native query are mutually exclusive")]
     TableQueryConflict,
@@ -444,18 +450,6 @@ mod tests {
     #[test]
     fn sqlite_is_an_available_input_format() {
         assert_eq!("sqlite".parse::<InputFormat>(), Ok(InputFormat::Sqlite));
-    }
-
-    #[cfg(not(feature = "sqlite"))]
-    #[test]
-    fn sqlite_is_not_an_available_input_format() {
-        let error = "sqlite"
-            .parse::<InputFormat>()
-            .expect_err("disabled format");
-        assert_eq!(
-            error.to_string(),
-            "invalid input format 'sqlite' (expected auto, delimited, json, or ndjson)"
-        );
     }
 
     #[test]

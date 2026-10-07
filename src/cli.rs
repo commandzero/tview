@@ -20,19 +20,19 @@ const HELP_STYLES: Styles = Styles::styled()
 #[command(name = "tview", version, disable_help_subcommand = true, styles = HELP_STYLES)]
 #[cfg_attr(
     all(feature = "sqlite", not(feature = "elasticsearch")),
-    command(about = "View delimited, JSON, NDJSON, or local SQLite data.")
+    command(about = "View delimited, JSON, NDJSON, TOON, or local SQLite data.")
 )]
 #[cfg_attr(
     all(feature = "sqlite", feature = "elasticsearch"),
-    command(about = "View delimited, JSON, NDJSON, SQLite, or Elasticsearch data.")
+    command(about = "View delimited, JSON, NDJSON, TOON, SQLite, or Elasticsearch data.")
 )]
 #[cfg_attr(
     all(feature = "elasticsearch", not(feature = "sqlite")),
-    command(about = "View delimited, JSON, NDJSON, or Elasticsearch data.")
+    command(about = "View delimited, JSON, NDJSON, TOON, or Elasticsearch data.")
 )]
 #[cfg_attr(
     not(any(feature = "sqlite", feature = "elasticsearch")),
-    command(about = "View delimited, JSON, or NDJSON data.")
+    command(about = "View delimited, JSON, NDJSON, or TOON data.")
 )]
 pub struct Args {
     /// Local file, standard input marker '-', or remote source URL.
@@ -106,11 +106,12 @@ pub struct Args {
     #[arg(short = 'q', long = "quote-char", default_value = "\"")]
     pub quote_char: String,
 
-    /// Input format. Automatic selection uses the filename and bounded content probing.
+    /// Input format: auto, delimited, json, ndjson, toon, or an enabled native source.
+    /// Auto recognizes TOON by .toon extension only; use --format toon for stdin.
     #[arg(long = "format", value_parser = parse_input_format)]
     pub format: Option<InputFormat>,
 
-    /// RFC 6901 JSON Pointer selecting the table within each JSON document.
+    /// RFC 6901 JSON Pointer selecting the table within each JSON or TOON document.
     #[arg(long = "json-path", value_parser = parse_json_pointer)]
     pub json_path: Option<JsonPointer>,
 
@@ -118,7 +119,7 @@ pub struct Args {
     #[arg(long = "object-mode", value_parser = parse_object_mode)]
     pub object_mode: Option<ObjectMode>,
 
-    /// JSON schema discovery policy.
+    /// Structured schema discovery policy.
     #[arg(long = "schema-scan", value_parser = parse_schema_scan)]
     pub schema_scan: Option<SchemaScan>,
 
@@ -341,7 +342,12 @@ impl Config {
         if args.table.is_some()
             && matches!(
                 explicit_format,
-                Some(InputFormat::Delimited | InputFormat::Json | InputFormat::Ndjson)
+                Some(
+                    InputFormat::Delimited
+                        | InputFormat::Json
+                        | InputFormat::Ndjson
+                        | InputFormat::Toon
+                )
             )
         {
             return Err(CliError::IncompatibleOptions {
@@ -353,7 +359,12 @@ impl Config {
         if args.query.is_some()
             && matches!(
                 explicit_format,
-                Some(InputFormat::Delimited | InputFormat::Json | InputFormat::Ndjson)
+                Some(
+                    InputFormat::Delimited
+                        | InputFormat::Json
+                        | InputFormat::Ndjson
+                        | InputFormat::Toon
+                )
             )
         {
             return Err(CliError::IncompatibleOptions {
@@ -417,7 +428,7 @@ impl Config {
 
 fn format_rejects_delimited_options(format: InputFormat) -> bool {
     match format {
-        InputFormat::Json | InputFormat::Ndjson => true,
+        InputFormat::Json | InputFormat::Ndjson | InputFormat::Toon => true,
         #[cfg(feature = "sqlite")]
         InputFormat::Sqlite => true,
         #[cfg(feature = "elasticsearch")]
@@ -1040,6 +1051,57 @@ mod tests {
         );
         assert_eq!(config.source_options.schema_scan, Some(SchemaScan::Full));
         assert_eq!(config.source_options.object_mode, Some(ObjectMode::Entries));
+    }
+
+    #[test]
+    fn toon_uses_structured_cli_options_without_delimited_or_native_options() {
+        let config = parse(&[
+            "tview",
+            "--format",
+            "toon",
+            "--json-path",
+            "/rows",
+            "--object-mode",
+            "entries",
+            "--schema-scan",
+            "full",
+            "-",
+        ]);
+        assert_eq!(config.source_options.format, Some(InputFormat::Toon));
+        assert_eq!(
+            config
+                .source_options
+                .json_path
+                .as_ref()
+                .map(JsonPointer::as_str),
+            Some("/rows")
+        );
+        assert_eq!(config.source_options.object_mode, Some(ObjectMode::Entries));
+        assert_eq!(config.source_options.schema_scan, Some(SchemaScan::Full));
+        for (option, value) in [
+            ("--delimiter", ","),
+            ("--encoding", "utf-8"),
+            ("--quoting", "QUOTE_NONE"),
+            ("--quote-char", "'"),
+        ] {
+            assert_eq!(
+                parse_config_error(&["tview", "--format", "toon", option, value, "-"]),
+                CliError::IncompatibleOptions {
+                    format: InputFormat::Toon,
+                    option: "delimited parsing options",
+                }
+            );
+        }
+        #[cfg(any(feature = "sqlite", feature = "elasticsearch"))]
+        for (option, value) in [("--table", "records"), ("--query", "SELECT * FROM records")] {
+            assert_eq!(
+                parse_config_error(&["tview", "--format", "toon", option, value, "-"]),
+                CliError::IncompatibleOptions {
+                    format: InputFormat::Toon,
+                    option,
+                }
+            );
+        }
     }
 
     #[test]
