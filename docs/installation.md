@@ -1,11 +1,27 @@
 ---
 type: Guide
 title: Installation
-description: Cargo installation, optional features, and local builds.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:35:24Z }
+description: Homebrew and Cargo installation, optional features, and local builds.
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T04:09:31Z }
 ---
 
 # Installation
+
+## Homebrew
+
+Install from the [CommandZero tap](https://github.com/commandzero/homebrew-tools):
+
+```sh
+brew tap commandzero/tools
+brew install tview
+```
+
+The formula installs prebuilt releases for macOS 14 or later on Apple Silicon
+and Ubuntu 24.04 or later on Linux amd64 or arm64 with glibc 2.39 or later.
+Intel macOS and a source-build fallback are not supported by the formula.
+Use Cargo below for Elasticsearch support or custom feature selection.
+
+## Cargo
 
 Install from crates.io with Rust 1.90.0 or later:
 

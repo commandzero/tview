@@ -9,7 +9,7 @@ table.
 
 ## Using Tview
 
-1. [Installation](installation.md) - Cargo installation, optional features, and local builds.
+1. [Installation](installation.md) - Homebrew and Cargo installation, optional features, and local builds.
 2. [File input](file-input.md) - Delimited text, JSON, NDJSON, TOON, format detection, and nested data.
 3. [SQLite sources](sqlite.md) - Read-only database browsing, table selection, and source queries.
 4. [Elasticsearch sources](elasticsearch.md) - ES|QL queries, index selection, authentication, and source limits.
