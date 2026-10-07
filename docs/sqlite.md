@@ -2,7 +2,7 @@
 type: Guide
 title: SQLite sources
 description: Read-only database browsing, table selection, and source queries.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:44:18Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:56:21Z }
 ---
 
 # SQLite sources
@@ -14,8 +14,9 @@ tview examples/data/us-counties.sqlite3 --format sqlite --table counties
 
 Tview opens local SQLite files read-only through Turso. It selects the only
 ordinary table or compatible ordinary view automatically. With several
-relations, the viewer opens a picker; batch output needs `--table <name>`,
-a saved `source.table`, or `--query`.
+relations, the viewer opens a picker unless a table or query is configured.
+Batch output needs `--table` or `--query`, or a saved view's `source.table`
+or `source.query`.
 
 SQLite support is enabled by default. Stdin, Turso Cloud, `libsql://`, and
 other remote SQLite URLs are unsupported; `libsql://` is reserved. See

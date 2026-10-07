@@ -2,7 +2,7 @@
 type: Guide
 title: Elasticsearch sources
 description: ES|QL queries, index selection, authentication, and source limits.
-generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:44:18Z }
+generated: { by: openai-codex/gpt-6.1-sol, at: 2026-10-07T03:56:21Z }
 ---
 
 # Elasticsearch sources
@@ -17,9 +17,10 @@ tview --format elasticsearch https://elastic.example:9200 \
   --query 'FROM logs-* | KEEP @timestamp, message | SORT @timestamp DESC'
 ```
 
-Without `--table` or `--query`, interactive mode offers a picker for visible,
-open non-dot indices and data streams. It omits aliases; use `--table` to select
-one. Batch output requires `--table` or `--query`.
+Select data with `--table` or `--query`, or a saved view's `source.table` or
+`source.query`. Without a selection, interactive mode offers a picker for
+visible, open non-dot indices and data streams. It omits aliases; use `--table`
+to select one. Batch output requires a configured table or query.
 
 ## Queries and limits
 
