@@ -14,6 +14,8 @@ mod sqlite;
 mod streaming_json;
 mod toon;
 
+#[cfg(feature = "elasticsearch")]
+pub(crate) use adapter::validate_elasticsearch_parsing_options;
 pub use adapter::{
     open_source, FormatResolver, OpenedSource, OpenedTable, ProbeResult, RelationAvailability,
     RelationCatalogEntry, RelationKind, RelationOpener, SourceAdapter,

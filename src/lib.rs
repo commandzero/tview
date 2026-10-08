@@ -420,6 +420,7 @@ fn configured_open_options(
     open_options.validate()?;
     #[cfg(feature = "elasticsearch")]
     if config.target.elastic_context().is_some() {
+        ingest::validate_elasticsearch_parsing_options(&open_options)?;
         if let Some(table) = &open_options.table {
             ingest::validate_from_target(table)?;
         }

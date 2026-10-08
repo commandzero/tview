@@ -181,6 +181,19 @@ impl FormatResolver {
     }
 }
 
+#[cfg(feature = "elasticsearch")]
+pub(crate) fn validate_elasticsearch_parsing_options(options: &OpenOptions) -> anyhow::Result<()> {
+    if options.has_delimited_options()
+        || options.json_path.is_some()
+        || options.object_mode != ObjectMode::Auto
+    {
+        anyhow::bail!(
+            "delimited and structured-file parsing options cannot be used with Elasticsearch input"
+        );
+    }
+    Ok(())
+}
+
 pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result<OpenedSource> {
     if let Some(target) = source.elastic_context() {
         target.validate()?;
@@ -297,14 +310,9 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
             anyhow::bail!("JSON starting paths cannot be used with SQLite input");
         }
     }
-    if elasticsearch
-        && (options.has_delimited_options()
-            || options.json_path.is_some()
-            || options.object_mode != ObjectMode::Auto)
-    {
-        anyhow::bail!(
-            "delimited and structured-file parsing options cannot be used with Elasticsearch input"
-        );
+    #[cfg(feature = "elasticsearch")]
+    if elasticsearch {
+        validate_elasticsearch_parsing_options(options)?;
     }
     let incompatible_object_mode = options.object_mode != ObjectMode::Auto
         && (matches!(resolved, InputFormat::Delimited | InputFormat::Ndjson)

@@ -517,6 +517,38 @@ mod elasticrc_contexts {
     }
 
     #[test]
+    fn invalid_context_parsing_options_do_not_start_a_resolver() {
+        let _guard = PTY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for options in [
+            "--object-mode entries",
+            "--json-path /rows",
+            "--delimiter ,",
+        ] {
+            let fixture = Fixture::new();
+            let marker = fixture.root.path().join("resolver-started");
+            let resolver = fixture.resolver(
+                "selected",
+                &format!("touch {}\nprintf selected-secret", shell_quote(&marker)),
+            );
+            fixture.write(
+                "production",
+                json!({"production": service("http://127.0.0.1:1", Some(json!({"api_key": resolver})))}),
+            );
+            let terminal = Terminal::start(&command(
+                &fixture,
+                &format!("'.es://logs-*' {options}"),
+                None,
+            ));
+            let output = terminal.finish();
+            assert_eq!(output.status.code(), Some(1), "{options}: {output:?}");
+            assert!(!marker.exists(), "{options} executed the context resolver");
+            no_secrets(&output, &["selected-secret"]);
+        }
+    }
+
+    #[test]
     fn delayed_initial_context_resolver_keeps_terminal_quit_responsive() {
         let _guard = PTY_LOCK
             .lock()

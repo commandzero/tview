@@ -50,6 +50,10 @@ or `--query`. These conflicts are rejected before credential resolvers run.
 An empty suffix keeps normal CLI-over-saved selection and the interactive
 picker. Batch output still needs a table or query.
 
+Delimited and structured-file parsing settings, including `--json-path` and
+non-auto `--object-mode`, are incompatible with Elasticsearch. Context startup
+rejects them before credential resolvers run, including settings from saved views.
+
 ### Configuration and trust
 
 Tview uses `ELASTIC_CLI_CONFIG_FILE` if set. Otherwise it uses the first readable
