@@ -145,17 +145,35 @@ pub fn run(args: cli::Args) -> anyhow::Result<()> {
                     &theme,
                 );
             })?;
-            let mut select_relation = |relations: &[ingest::RelationCatalogEntry]| {
-                select_table_modal(&mut terminal, &theme, relations)
+            #[cfg(feature = "elasticsearch")]
+            let prepared = if source.elastic_context().is_some() {
+                prepare_context_app(&config, theme_load, source, &mut terminal)?
+            } else {
+                let mut select_relation = |relations: &[ingest::RelationCatalogEntry]| {
+                    select_table_modal(&mut terminal, &theme, relations)
+                };
+                prepare_app(
+                    &config,
+                    theme_load,
+                    source,
+                    |_| Ok(()),
+                    Some(&mut select_relation),
+                )?
             };
-            let Some(mut app) = prepare_app(
-                &config,
-                theme_load,
-                source,
-                |_| Ok(()),
-                Some(&mut select_relation),
-            )?
-            else {
+            #[cfg(not(feature = "elasticsearch"))]
+            let prepared = {
+                let mut select_relation = |relations: &[ingest::RelationCatalogEntry]| {
+                    select_table_modal(&mut terminal, &theme, relations)
+                };
+                prepare_app(
+                    &config,
+                    theme_load,
+                    source,
+                    |_| Ok(()),
+                    Some(&mut select_relation),
+                )?
+            };
+            let Some(mut app) = prepared else {
                 terminal.restore()?;
                 return Ok(());
             };
@@ -290,18 +308,92 @@ fn prepare_app(
     )
 }
 
-fn open_selected_source(
+#[cfg(feature = "elasticsearch")]
+fn prepare_context_app(
     config: &cli::Config,
+    theme_load: theme::ThemeLoad,
     source: ingest::source::InputSource,
-    mut report_status: impl FnMut(&str) -> anyhow::Result<()>,
-    mut select_relation: Option<&mut RelationSelector<'_>>,
+    terminal: &mut ui::terminal::TerminalSession,
+) -> anyhow::Result<Option<App>> {
+    #[cfg(feature = "saved-views")]
+    let invocation = prepare_saved_view_invocation(config, None)?;
+    configured_open_options(
+        config,
+        #[cfg(feature = "saved-views")]
+        &invocation,
+    )?;
+    let target = source
+        .elastic_context()
+        .expect("context startup requires a context target")
+        .clone();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    // Resolution may block on a command or credential store. The target clone
+    // shares its connection cache with App::source and all later reloads.
+    std::thread::spawn(move || {
+        let result = ingest::elastic_context::resolve_connection(&target).map(|_| ());
+        let _ = sender.send(result);
+    });
+    let status = format!("Loading {} (q/Esc to cancel)", source.display_name());
+    let mut redraw = true;
+    loop {
+        if redraw {
+            terminal.terminal_mut().draw(|frame| {
+                ui::render_footer_with_theme(
+                    Some(&status),
+                    frame.area(),
+                    frame.buffer_mut(),
+                    &theme_load.theme,
+                );
+            })?;
+            redraw = false;
+        }
+        match receiver.try_recv() {
+            Ok(result) => {
+                result?;
+                break;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                anyhow::bail!("Elasticsearch context preparation worker stopped");
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        if poll(Duration::from_millis(50))? {
+            match read()? {
+                Event::Key(event)
+                    if matches!(
+                        event.code,
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q')
+                    ) || (event.code == KeyCode::Char('c')
+                        && event.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    // Do not join a blocked resolver when cancelling startup.
+                    return Ok(None);
+                }
+                Event::Resize(_, _) => redraw = true,
+                _ => {}
+            }
+        }
+    }
+    let theme = theme_load.theme.clone();
+    let mut select_relation = |relations: &[ingest::RelationCatalogEntry]| {
+        select_table_modal(terminal, &theme, relations)
+    };
+    prepare_app_from_selection(
+        config,
+        theme_load,
+        source,
+        |_| Ok(()),
+        Some(&mut select_relation),
+        #[cfg(feature = "saved-views")]
+        &invocation,
+        ingest::open_source,
+    )
+}
+
+fn configured_open_options(
+    config: &cli::Config,
     #[cfg(feature = "saved-views")] invocation: &saved_views::SavedViewInvocation,
-    open_source: impl FnOnce(
-        ingest::source::InputSource,
-        &ingest::OpenOptions,
-    ) -> anyhow::Result<ingest::OpenedSource>,
-) -> anyhow::Result<Option<(ingest::OpenedTable, ingest::OpenOptions)>> {
-    report_status(&format!("Loading {}", source.display_name()))?;
+) -> anyhow::Result<ingest::OpenOptions> {
     let parse_options = ingest::ParseOptions {
         encoding: config.encoding.clone(),
         delimiter: config.delimiter,
@@ -326,6 +418,33 @@ fn open_selected_source(
     open_options.preview = config.top_lines.is_some();
     open_options.delimited = parse_options;
     open_options.validate()?;
+    #[cfg(feature = "elasticsearch")]
+    if config.target.elastic_context().is_some() {
+        ingest::validate_elasticsearch_parsing_options(&open_options)?;
+        if let Some(table) = &open_options.table {
+            ingest::validate_from_target(table)?;
+        }
+    }
+    Ok(open_options)
+}
+
+fn open_selected_source(
+    config: &cli::Config,
+    source: ingest::source::InputSource,
+    mut report_status: impl FnMut(&str) -> anyhow::Result<()>,
+    mut select_relation: Option<&mut RelationSelector<'_>>,
+    #[cfg(feature = "saved-views")] invocation: &saved_views::SavedViewInvocation,
+    open_source: impl FnOnce(
+        ingest::source::InputSource,
+        &ingest::OpenOptions,
+    ) -> anyhow::Result<ingest::OpenedSource>,
+) -> anyhow::Result<Option<(ingest::OpenedTable, ingest::OpenOptions)>> {
+    report_status(&format!("Loading {}", source.display_name()))?;
+    let mut open_options = configured_open_options(
+        config,
+        #[cfg(feature = "saved-views")]
+        invocation,
+    )?;
     if let Some(schema_status) = full_schema_scan_status(&source, &open_options) {
         report_status(&schema_status)?;
     }
@@ -635,10 +754,17 @@ fn prepare_saved_view_invocation(
     use crate::saved_views::SavedViewSelection;
 
     let target_identity = PathBuf::from(config.target.saved_view_filename());
+    let context_identity = config
+        .target
+        .elastic_context()
+        .map(|context| context.safe_identity());
     let selection = match &config.saved_view {
         CliSavedViewSelection::Disabled => None,
-        CliSavedViewSelection::Auto => Some(SavedViewSelection::Auto {
-            input_path: &target_identity,
+        CliSavedViewSelection::Auto => Some(match context_identity.as_deref() {
+            Some(identity) => SavedViewSelection::AutoSource { identity },
+            None => SavedViewSelection::Auto {
+                input_path: &target_identity,
+            },
         }),
         CliSavedViewSelection::Force(name) => Some(SavedViewSelection::Force { name }),
     };
@@ -1534,7 +1660,10 @@ impl App {
 
     #[cfg(feature = "saved-views")]
     fn input_filename(&self) -> String {
-        self.source.saved_view_filename()
+        self.source.elastic_context().map_or_else(
+            || self.source.saved_view_filename(),
+            |context| context.safe_identity(),
+        )
     }
 
     fn reload(&mut self) -> anyhow::Result<()> {
@@ -2852,6 +2981,134 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[cfg(all(feature = "elasticsearch", feature = "saved-views"))]
+    #[test]
+    fn context_saved_matching_merging_and_yaml_use_canonical_identity() {
+        let root = tempfile::tempdir().expect("config root");
+        let views = root.path().join("tview/views");
+        std::fs::create_dir_all(&views).expect("views dir");
+        std::fs::write(
+            views.join("context.yml"),
+            "name: context\nfilenames: ['.production.elasticsearch://logs-*', '.production.elasticsearch://']\nsource:\n  format: json\n  query: FROM saved-logs\nview: {}\n",
+        )
+        .expect("context view");
+        for source in [
+            ".production.es://logs-*",
+            ".production.elasticsearch://logs-*",
+            ".production.es://",
+        ] {
+            let args = cli::Args::try_parse_from(["tview", source]).expect("arguments");
+            let config = cli::Config::from_args(args).expect("configuration");
+            let invocation = prepare_saved_view_invocation(&config, Some(root.path()))
+                .expect("saved view selection");
+            let saved_views::SavedViewInvocation::Enabled {
+                selected: Some(selected),
+                target_path: Some(target_path),
+                ..
+            } = &invocation
+            else {
+                panic!("canonical context source must select saved view");
+            };
+            assert_eq!(selected.canonical_name, "context");
+            assert_eq!(target_path.parent(), Some(views.as_path()));
+            let options = configured_open_options(&config, &invocation).expect("merged options");
+            assert_eq!(options.format, ingest::InputFormat::Elasticsearch);
+            if config.target.elastic_context().unwrap().table().is_some() {
+                assert_eq!(options.table.as_deref(), Some("logs-*"));
+                assert_eq!(options.native_query, None);
+            } else {
+                assert_eq!(options.table, None);
+                assert_eq!(options.native_query.as_deref(), Some("FROM saved-logs"));
+            }
+            let canonical = config.target.safe_identity();
+            let mut app = app_with_rows(rows(&[&["message"], &["saved"]]));
+            app.source = config.target;
+            let yaml = app
+                .view
+                .to_saved_view_yaml("context", &app.input_filename(), None);
+            let parsed = saved_views::parse_saved_view_yaml(&yaml).expect("generated YAML");
+            assert_eq!(parsed.view.filenames[0].raw, canonical);
+        }
+    }
+
+    #[cfg(all(feature = "elasticsearch", feature = "saved-views"))]
+    #[test]
+    fn generated_context_views_roundtrip_through_discovery_for_both_aliases() {
+        for (source, alias) in [
+            (".es://", ".elasticsearch://"),
+            (
+                ".production.us-west.es://",
+                ".production.us-west.elasticsearch://",
+            ),
+        ] {
+            let root = tempfile::tempdir().expect("config root");
+            let args = cli::Args::try_parse_from([
+                "tview",
+                source,
+                "--query",
+                "FROM logs-* | KEEP message",
+            ])
+            .expect("initial arguments");
+            let config = cli::Config::from_args(args).expect("initial configuration");
+            let invocation = prepare_saved_view_invocation(&config, Some(root.path()))
+                .expect("initial invocation");
+            let saved_views::SavedViewInvocation::Enabled {
+                selected: None,
+                target_path: Some(path),
+                view_name,
+                ..
+            } = &invocation
+            else {
+                panic!("new context source must prepare an authoring path");
+            };
+            assert_eq!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("yml")
+            );
+            assert_eq!(
+                path.file_stem().and_then(|value| value.to_str()),
+                Some(config.target.saved_view_filename().as_str())
+            );
+            let mut app = app_with_rows(rows(&[&["message"], &["context-row"]]));
+            app.source = config.target.clone();
+            app.view
+                .initialize_source_configuration(
+                    configured_open_options(&config, &invocation).expect("opening options"),
+                )
+                .expect("committed source");
+            let yaml = app
+                .view
+                .to_saved_view_yaml(view_name, &app.input_filename(), None);
+            write_saved_view_atomic(path, &yaml).expect("saved generated view");
+            for target in [source, alias] {
+                let args = cli::Args::try_parse_from(["tview", target]).expect("reopen arguments");
+                let config = cli::Config::from_args(args).expect("reopen configuration");
+                let reopened = prepare_saved_view_invocation(&config, Some(root.path()))
+                    .expect("reopened invocation");
+                let saved_views::SavedViewInvocation::Enabled {
+                    selected: Some(selected),
+                    target_path: Some(generated_path),
+                    ..
+                } = &reopened
+                else {
+                    panic!("generated context view must be rediscovered without CLI selection");
+                };
+                assert_eq!(generated_path, path);
+                assert_eq!(selected.path, *path);
+                assert_eq!(
+                    selected.view.filenames[0].raw,
+                    config.target.safe_identity()
+                );
+                let options = configured_open_options(&config, &reopened).expect("saved options");
+                assert_eq!(
+                    options.native_query.as_deref(),
+                    Some("FROM logs-* | KEEP message")
+                );
+                assert_eq!(options.table, None);
+            }
+        }
     }
 
     #[cfg(feature = "saved-views")]

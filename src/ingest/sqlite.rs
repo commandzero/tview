@@ -55,6 +55,9 @@ impl SourceAdapter for SqliteAdapter {
                     InputSource::Url(url).safe_identity()
                 )
             }
+            InputSource::ElasticContext(_) => {
+                anyhow::bail!("Elastic CLI context targets require Elasticsearch input, not SQLite")
+            }
         };
         let session = Arc::new(SqliteSession::open(&path)?);
         if let Some(native_query) = options.native_query.as_deref() {

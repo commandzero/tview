@@ -344,6 +344,32 @@ fn source_errors_leave_stdout_empty() {
 
 #[cfg(feature = "elasticsearch")]
 #[test]
+fn elasticsearch_rejects_local_paths_and_stdin_before_file_probing() {
+    let directory = tempfile::tempdir().expect("target directory");
+    let missing = directory.path().join("missing.csv");
+    let readable = fixture("id\n1\n", ".csv");
+    for target in [
+        std::path::Path::new("-"),
+        missing.as_path(),
+        directory.path(),
+        readable.path(),
+    ] {
+        tview_command()
+            .args(["--format", "elasticsearch", "--query", "FROM logs-*"])
+            .arg(target)
+            .write_stdin("id\n1\n")
+            .timeout(std::time::Duration::from_secs(5))
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr(
+                predicate::str::contains("Elasticsearch").and(predicate::str::contains("endpoint")),
+            );
+    }
+}
+
+#[cfg(feature = "elasticsearch")]
+#[test]
 fn elasticsearch_direct_native_query_waits_and_emits_only_table_bytes() {
     let _guard = elasticsearch_test_lock();
     let server = ElasticsearchServer::start(vec![ElasticsearchResponse::delayed(

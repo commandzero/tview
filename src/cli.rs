@@ -291,6 +291,38 @@ pub struct Config {
 
 impl Config {
     pub fn from_args(args: Args) -> Result<Self, CliError> {
+        let target = SourceTarget::from_cli_value(&args.filename);
+        if let Some(context) = target.elastic_context() {
+            context
+                .validate()
+                .map_err(|error| CliError::InvalidContext(error.to_string()))?;
+            #[cfg(not(feature = "elasticsearch"))]
+            return Err(CliError::ElasticsearchUnavailable);
+            #[cfg(feature = "elasticsearch")]
+            {
+                if args.format.is_some_and(|format| {
+                    !matches!(format, InputFormat::Auto | InputFormat::Elasticsearch)
+                }) {
+                    return Err(CliError::IncompatibleOptions {
+                        format: args.format.expect("checked format"),
+                        option: "an Elasticsearch context source",
+                    });
+                }
+                if context.table().is_some() {
+                    for (selected, option) in [
+                        (args.table.is_some(), "--table"),
+                        (args.query.is_some(), "--query"),
+                    ] {
+                        if selected {
+                            return Err(CliError::ConflictingOptions {
+                                option: "a context table suffix",
+                                other: option,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         let table_color_limit = args.table_color.flatten();
         if table_color_limit.is_some() {
             for (selected, option) in [
@@ -310,6 +342,12 @@ impl Config {
             || args.quoting.is_some()
             || args.quote_char != "\"";
         let explicit_format = args.format;
+        #[cfg(feature = "elasticsearch")]
+        let explicit_format = if target.elastic_context().is_some() {
+            Some(InputFormat::Elasticsearch)
+        } else {
+            explicit_format
+        };
         if explicit_format.is_some_and(format_rejects_delimited_options)
             && delimited_option_selected
         {
@@ -373,7 +411,11 @@ impl Config {
             });
         }
         #[cfg(any(feature = "sqlite", feature = "elasticsearch"))]
-        let table = args.table;
+        let table = target
+            .elastic_context()
+            .and_then(|context| context.table())
+            .map(str::to_owned)
+            .or(args.table);
         #[cfg(not(any(feature = "sqlite", feature = "elasticsearch")))]
         let table = None;
         #[cfg(any(feature = "sqlite", feature = "elasticsearch"))]
@@ -386,7 +428,7 @@ impl Config {
         let resolved_cli_format =
             explicit_format.or_else(|| delimited_option_selected.then_some(InputFormat::Auto));
         Ok(Self {
-            target: SourceTarget::from_cli_value(&args.filename),
+            target,
             interactive: args.interactive,
             output: if args.table_color.is_some() || args.preview.is_some() {
                 Some(OutputFormat::Table)
@@ -466,6 +508,10 @@ pub struct StartPosition {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CliError {
+    #[error("{0}")]
+    InvalidContext(String),
+    #[error("Elasticsearch context sources require a build with Elasticsearch support")]
+    ElasticsearchUnavailable,
     #[error("invalid start position '{value}'")]
     InvalidStartPosition { value: String },
     #[error("invalid column width '{value}'")]
@@ -665,6 +711,63 @@ mod tests {
     fn parse_config_error(args: &[&str]) -> CliError {
         let args = Args::try_parse_args_from(args.iter().copied()).expect("parse args");
         Config::from_args(args).expect_err("config error")
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    #[test]
+    fn context_sources_supply_format_and_literal_selection() {
+        for source in [".es://logs-*", ".production.us-west.elasticsearch://logs-*"] {
+            let config = parse(&["tview", source]);
+            assert_eq!(
+                config.source_options.format,
+                Some(InputFormat::Elasticsearch)
+            );
+            assert_eq!(config.source_options.table.as_deref(), Some("logs-*"));
+            assert_eq!(config.source_options.native_query, None);
+        }
+        let config = parse(&[
+            "tview",
+            ".es://",
+            "--format",
+            "auto",
+            "--query",
+            "FROM logs-*",
+        ]);
+        assert_eq!(
+            config.source_options.format,
+            Some(InputFormat::Elasticsearch)
+        );
+        assert_eq!(config.source_options.table, None);
+        assert_eq!(
+            config.source_options.native_query.as_deref(),
+            Some("FROM logs-*")
+        );
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    #[test]
+    fn context_sources_reject_competing_cli_choices() {
+        assert!(matches!(
+            parse_config_error(&["tview", ".es://", "--format", "json"]),
+            CliError::IncompatibleOptions { .. }
+        ));
+        for option in ["--table", "--query"] {
+            assert!(matches!(
+                parse_config_error(&["tview", ".es://logs-*", option, "logs-*"]),
+                CliError::ConflictingOptions { .. }
+            ));
+        }
+    }
+
+    #[cfg(not(feature = "elasticsearch"))]
+    #[test]
+    fn context_sources_report_unavailable_before_source_opening() {
+        for source in [".es://", ".production.elasticsearch://logs-*"] {
+            assert_eq!(
+                parse_config_error(&["tview", source]),
+                CliError::ElasticsearchUnavailable
+            );
+        }
     }
 
     #[test]

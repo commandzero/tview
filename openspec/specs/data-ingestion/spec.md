@@ -5,7 +5,7 @@ Define data source, decoding, parsing, normalization, and large-file groundwork 
 ## Requirements
 
 ### Requirement: Input source support
-The system SHALL represent positional source targets as filesystem paths, `file://` URI paths, standard input, or parsed remote URLs and SHALL pass the target to the resolved format adapter without interpreting a remote URL as a local path.
+The system SHALL represent positional source targets as filesystem paths, `file://` URI paths, standard input, parsed remote URLs, or dot-context Elasticsearch references. It SHALL recognize dot-context syntax before generic URL and filesystem handling and SHALL pass each target to the resolved format adapter without interpreting a remote URL or context reference as a local path. Merely parsing a context target SHALL NOT load configuration or execute credential resolvers.
 
 #### Scenario: File URI path
 - **WHEN** a user runs `tview file:///tmp/data.csv`
@@ -22,6 +22,18 @@ The system SHALL represent positional source targets as filesystem paths, `file:
 #### Scenario: Remote URL is not a path
 - **WHEN** an HTTP(S) or `libsql://` target is parsed
 - **THEN** Tview does not call local filesystem metadata or file-opening operations for that target
+
+#### Scenario: Dot-context is not a path
+- **WHEN** `.production.elasticsearch://logs-*` is parsed
+- **THEN** Tview retains a context reference and table suffix, selects Elasticsearch, and does not perform file probing or URL scheme parsing on the reference
+
+#### Scenario: Dot-prefixed local filename
+- **WHEN** a user opens a path such as `.es`, `.production.es`, or `./.production.es`
+- **THEN** Tview treats it as a local path because it lacks the dot-context `://` delimiter
+
+#### Scenario: Parse without resolver side effects
+- **WHEN** help, option validation, or source parsing examines a dot-context target
+- **THEN** it does not read Elastic CLI configuration or execute resolvers
 
 ### Requirement: Encoding detection and override
 The system SHALL use the provided encoding when `--encoding` is set and SHALL otherwise attempt the compatibility encoding set with specific encodings before permissive single-byte fallbacks. The compatibility set SHALL include locale encoding, `utf-8`, `utf-16`, `iso8859-1`, `iso8859-2`, `cp720`, and `latin-1`, with `latin-1` as a late fallback.

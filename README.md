@@ -9,16 +9,26 @@ See [screenshots](screenshots/) for the interface.
 
 ## Install
 
-Install from crates.io with Rust 1.90.0 or later:
+Install with [Homebrew](https://github.com/commandzero/homebrew-tools):
+
+```sh
+brew install commandzero/tools/tview
+```
+
+Or install from crates.io with Rust 1.90.0 or later:
 
 ```sh
 cargo install tview
 ```
 
-SQLite, saved views, and clipboard support are included. Add Elasticsearch
-support with `--features elasticsearch`. See
-[installation](docs/installation.md) for build options and
+SQLite, saved views, and clipboard support are included. For Elasticsearch
+support, install with `cargo install tview --features elasticsearch`. See
+[installation](docs/installation.md) for supported platforms and build options, and
 [migration](docs/migration.md) if you used Tabview.
+
+With Elasticsearch enabled, `tview '.production.es://logs-*'` reuses an Elastic
+CLI context. See [Elasticsearch sources](docs/elasticsearch.md#elastic-cli-contexts)
+for current-context aliases, configuration, and authentication.
 
 ## Get started
 

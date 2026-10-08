@@ -5,6 +5,7 @@
 ### Added
 
 - Read TOON 4.1 files and stdin, preserving nested column labels and keyed objects (#14).
+- Reuse Elastic CLI contexts for Elasticsearch connections with `.es://` and named context sources in Elasticsearch-enabled builds (#16).
 
 ### Fixed
 
@@ -13,6 +14,11 @@
 - Filtered full-schema previews include later accepted fields without showing fields found only in rejected rows (#13).
 - Colored table output uses the same conditional foreground for formatted cells as the interactive viewer (#13).
 - Failed output preparation retains schema updates already discovered from the source (#13).
+- Elasticsearch format rejects local files and stdin with an endpoint diagnostic before probing files (#16).
+- Keep generated context view filenames distinct for wildcard selectors, punctuation, Unicode, and case-sensitive context names (#16).
+- Match full saved context identities literally instead of interpreting context names or table selectors as filename globs (#16).
+- Preserve platform filename case behavior for general saved-view globs and regexes used with context sources (#16).
+- Reject incompatible context parsing settings before executing credential resolvers during interactive startup (#16).
 
 ## [0.1.1] - 2026-10-03
 

@@ -2,6 +2,8 @@ use std::fmt;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::str::FromStr;
+#[cfg(feature = "elasticsearch")]
+use std::sync::OnceLock;
 use std::sync::{Arc, Condvar, Mutex};
 
 use url::Url;
@@ -11,15 +13,133 @@ pub enum SourceTarget {
     Path(PathBuf),
     Stdin,
     Url(Url),
+    ElasticContext(ElasticContextTarget),
     StreamingStdin(StreamingInput),
 }
 
 pub type InputSource = SourceTarget;
 
+/// An unresolved Elastic CLI service selection. Parsing and identity access
+/// never discover configuration or resolve credentials.
+#[derive(Clone)]
+pub struct ElasticContextTarget {
+    reference: String,
+    table: Option<String>,
+    #[cfg(feature = "elasticsearch")]
+    connection: Arc<OnceLock<Result<Arc<super::elastic_context::ContextConnection>, String>>>,
+}
+
+impl ElasticContextTarget {
+    fn from_cli_value(value: &str) -> Self {
+        let (reference, suffix) = value.split_once("://").expect("reserved context delimiter");
+        let reference = reference
+            .strip_suffix(".es")
+            .map(|prefix| format!("{prefix}.elasticsearch"))
+            .unwrap_or_else(|| reference.to_owned());
+        Self {
+            reference,
+            table: (!suffix.is_empty()).then(|| suffix.to_owned()),
+            #[cfg(feature = "elasticsearch")]
+            connection: Arc::new(OnceLock::new()),
+        }
+    }
+
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    pub fn table(&self) -> Option<&str> {
+        self.table.as_deref()
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let reference = self
+            .reference
+            .strip_prefix('.')
+            .filter(|value| !value.is_empty() && !value.contains(['/', '\\']))
+            .ok_or_else(|| anyhow::anyhow!("malformed Elastic CLI context reference"))?;
+        let service = match reference.rsplit_once('.') {
+            Some((context, service)) => {
+                if context.is_empty() {
+                    anyhow::bail!("Elastic CLI context name cannot be empty");
+                }
+                service
+            }
+            None => reference,
+        };
+        if service != "elasticsearch" {
+            anyhow::bail!("Elastic CLI context targets must select es or elasticsearch");
+        }
+        #[cfg(feature = "elasticsearch")]
+        if let Some(table) = self.table() {
+            super::elasticsearch::validate_from_target(table)?;
+        }
+        Ok(())
+    }
+
+    pub fn safe_identity(&self) -> String {
+        format!("{}://{}", self.reference, self.table().unwrap_or(""))
+    }
+
+    fn saved_view_filename(&self) -> String {
+        let parts = [self.reference(), "://", self.table().unwrap_or("")];
+        let is_literal = |byte: u8| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+        };
+        let capacity = parts
+            .iter()
+            .flat_map(|part| part.bytes())
+            .map(|byte| if is_literal(byte) { 1 } else { 3 })
+            .sum();
+        let mut filename = String::with_capacity(capacity);
+        // Escape the marker itself and use lowercase ASCII only: identities
+        // remain distinct even on case-folding or Unicode-normalizing filesystems.
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in parts.iter().flat_map(|part| part.bytes()) {
+            if is_literal(byte) {
+                filename.push(char::from(byte));
+            } else {
+                filename.push('_');
+                filename.push(char::from(HEX[usize::from(byte >> 4)]));
+                filename.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+        }
+        filename
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    pub(crate) fn connection_cache(
+        &self,
+    ) -> &OnceLock<Result<Arc<super::elastic_context::ContextConnection>, String>> {
+        &self.connection
+    }
+}
+
+impl fmt::Debug for ElasticContextTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ElasticContextTarget")
+            .field("reference", &self.reference)
+            .field("table", &self.table)
+            .finish()
+    }
+}
+
+impl PartialEq for ElasticContextTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.reference == other.reference && self.table == other.table
+    }
+}
+
+impl Eq for ElasticContextTarget {}
+
 impl SourceTarget {
     pub fn from_cli_value(value: &str) -> Self {
         if value == "-" {
             return Self::Stdin;
+        }
+        if value.starts_with('.') && value.contains("://") {
+            return Self::ElasticContext(ElasticContextTarget::from_cli_value(value));
         }
         if is_windows_drive_path(value) {
             return Self::Path(PathBuf::from(value));
@@ -43,7 +163,7 @@ impl SourceTarget {
                 .unwrap_or_else(|| path.to_str().unwrap_or("input"))
                 .to_owned(),
             Self::Stdin | Self::StreamingStdin(_) => "stdin".to_owned(),
-            Self::Url(_) => self.safe_identity(),
+            Self::Url(_) | Self::ElasticContext(_) => self.safe_identity(),
         }
     }
 
@@ -62,14 +182,21 @@ impl SourceTarget {
     pub fn as_path(&self) -> Option<&std::path::Path> {
         match self {
             Self::Path(path) => Some(path),
-            Self::Stdin | Self::Url(_) | Self::StreamingStdin(_) => None,
+            Self::Stdin | Self::Url(_) | Self::ElasticContext(_) | Self::StreamingStdin(_) => None,
         }
     }
 
     pub fn as_url(&self) -> Option<&Url> {
         match self {
             Self::Url(url) => Some(url),
-            Self::Path(_) | Self::Stdin | Self::StreamingStdin(_) => None,
+            Self::Path(_) | Self::Stdin | Self::ElasticContext(_) | Self::StreamingStdin(_) => None,
+        }
+    }
+
+    pub fn elastic_context(&self) -> Option<&ElasticContextTarget> {
+        match self {
+            Self::ElasticContext(target) => Some(target),
+            _ => None,
         }
     }
 
@@ -80,6 +207,7 @@ impl SourceTarget {
         match self {
             Self::Path(path) => path.to_string_lossy().into_owned(),
             Self::Stdin | Self::StreamingStdin(_) => "-".to_owned(),
+            Self::ElasticContext(target) => target.safe_identity(),
             Self::Url(url) => {
                 let mut safe = url.clone();
                 let _ = safe.set_username("");
@@ -91,8 +219,10 @@ impl SourceTarget {
         }
     }
 
-    /// A basename-safe identity for saved-view matching and generated YAML.
-    /// Remote targets use the complete non-secret endpoint rather than only
+    /// A basename-safe identity for generated view filenames and legacy
+    /// path/URL saved-view matching. Context matching and YAML use the full
+    /// canonical `safe_identity()` instead, preserving the literal selector.
+    /// Remote targets retain the complete non-secret endpoint rather than only
     /// its final path segment so clusters on different hosts do not collide.
     pub fn saved_view_filename(&self) -> String {
         match self {
@@ -102,6 +232,7 @@ impl SourceTarget {
                 .unwrap_or("input")
                 .to_owned(),
             Self::Stdin | Self::StreamingStdin(_) => "-".to_owned(),
+            Self::ElasticContext(target) => target.saved_view_filename(),
             Self::Url(_) => {
                 let identity = self.safe_identity();
                 let mut value = String::with_capacity(identity.len());
@@ -157,6 +288,10 @@ pub fn read_source(source: &InputSource) -> io::Result<Vec<u8>> {
                 "remote target '{}' is not a byte-stream source",
                 safe_url(url)
             ),
+        )),
+        InputSource::ElasticContext(_) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Elastic CLI context targets are not byte-stream sources",
         )),
     }
 }
@@ -390,6 +525,156 @@ mod tests {
         assert_eq!(url.host_str(), Some("elastic.example"));
         assert_eq!(url.port(), Some(9200));
         assert_eq!(url.path(), "/logs");
+    }
+
+    #[test]
+    fn parses_context_aliases_and_preserves_exact_named_selection() {
+        for (short, long, reference) in [
+            (".es://", ".elasticsearch://", ".elasticsearch"),
+            (
+                ".production.es://",
+                ".production.elasticsearch://",
+                ".production.elasticsearch",
+            ),
+            (
+                ".production.us-west.es://",
+                ".production.us-west.elasticsearch://",
+                ".production.us-west.elasticsearch",
+            ),
+        ] {
+            let short = InputSource::from_cli_value(short);
+            let long = InputSource::from_cli_value(long);
+            assert_eq!(short, long);
+            let context = short.elastic_context().expect("context selection");
+            context.validate().expect("valid service reference");
+            assert_eq!(context.reference(), reference);
+            assert_eq!(context.table(), None);
+            assert!(short.as_path().is_none());
+            assert!(short.as_url().is_none());
+            assert!(!short.is_seekable());
+            assert_eq!(short.safe_identity(), format!("{reference}://"));
+            assert_eq!(short.saved_view_filename(), long.saved_view_filename());
+        }
+        assert_ne!(
+            InputSource::from_cli_value(".es://"),
+            InputSource::from_cli_value(".production.es://")
+        );
+        assert_ne!(
+            InputSource::from_cli_value(".production.es://"),
+            InputSource::from_cli_value(".Production.es://")
+        );
+    }
+
+    #[test]
+    fn distinct_context_identities_have_distinct_case_fold_safe_view_filenames() {
+        for (left, right) in [
+            (".production.es://logs-*", ".production.es://logs-?"),
+            (".production.es://logs_a", ".production.es://logs_5fa"),
+            (".production+east.es://", ".production east.es://"),
+            (".productionα.es://", ".productionβ.es://"),
+            (".Production.es://", ".production.es://"),
+        ] {
+            let left = InputSource::from_cli_value(left);
+            let right = InputSource::from_cli_value(right);
+            let left_filename = left.saved_view_filename();
+            let right_filename = right.saved_view_filename();
+            assert_ne!(
+                left_filename.to_ascii_lowercase(),
+                right_filename.to_ascii_lowercase(),
+                "distinct context identities share a generated view filename"
+            );
+            for filename in [left_filename, right_filename] {
+                assert!(
+                    filename
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'.' | b'-' | b'_'))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn context_suffixes_are_literal_and_part_of_saved_identity() {
+        let short = InputSource::from_cli_value(".production.es://logs-*,metrics-?");
+        let long = InputSource::from_cli_value(".production.elasticsearch://logs-*,metrics-?");
+        let context = short.elastic_context().unwrap();
+        assert_eq!(context.table(), Some("logs-*,metrics-?"));
+        context.validate().expect("table-pattern selection");
+        assert_eq!(short, long);
+        assert_eq!(
+            short.safe_identity(),
+            ".production.elasticsearch://logs-*,metrics-?"
+        );
+        assert_eq!(short.display_name(), short.safe_identity());
+        assert_eq!(short.saved_view_filename(), long.saved_view_filename());
+        let encoded = InputSource::from_cli_value(".es://logs%2F2026/path?query#fragment");
+        assert_eq!(
+            encoded.elastic_context().unwrap().table(),
+            Some("logs%2F2026/path?query#fragment")
+        );
+        assert_eq!(
+            encoded.safe_identity(),
+            ".elasticsearch://logs%2F2026/path?query#fragment"
+        );
+    }
+
+    #[test]
+    fn malformed_reserved_contexts_never_become_file_or_url_inputs() {
+        for value in [
+            ".://",
+            "..es://",
+            ".production.kibana://",
+            ".cloud://",
+            ".production.unknown://",
+            "./.production.es://",
+            r".production\name.es://",
+        ] {
+            let source = InputSource::from_cli_value(value);
+            assert!(source
+                .elastic_context()
+                .expect("reserved context")
+                .validate()
+                .is_err());
+            assert!(source.as_path().is_none());
+            assert!(source.as_url().is_none());
+            assert_eq!(
+                read_source(&source).unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn dot_prefixed_names_without_the_delimiter_remain_paths() {
+        for path in [
+            ".es",
+            ".production.es",
+            "./.production.es",
+            ".es:/logs",
+            "../logs.csv",
+        ] {
+            assert_eq!(
+                InputSource::from_cli_value(path),
+                InputSource::Path(PathBuf::from(path))
+            );
+        }
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    #[test]
+    fn context_suffix_validation_reuses_table_selection_rules() {
+        for suffix in [
+            "logs/2026",
+            "logs%2F2026",
+            "logs | KEEP password",
+            "logs\nsecret",
+        ] {
+            let source = InputSource::from_cli_value(&format!(".es://{suffix}"));
+            let context = source.elastic_context().unwrap();
+            assert_eq!(context.table(), Some(suffix));
+            assert!(context.validate().is_err());
+        }
     }
 
     #[test]

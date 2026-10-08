@@ -1,7 +1,11 @@
 mod adapter;
 mod delimited;
 #[cfg(feature = "elasticsearch")]
+pub(crate) mod elastic_context;
+#[cfg(feature = "elasticsearch")]
 mod elasticsearch;
+#[cfg(feature = "elasticsearch")]
+pub(crate) use elasticsearch::validate_from_target;
 mod json;
 mod options;
 pub mod source;
@@ -10,6 +14,8 @@ mod sqlite;
 mod streaming_json;
 mod toon;
 
+#[cfg(feature = "elasticsearch")]
+pub(crate) use adapter::validate_elasticsearch_parsing_options;
 pub use adapter::{
     open_source, FormatResolver, OpenedSource, OpenedTable, ProbeResult, RelationAvailability,
     RelationCatalogEntry, RelationKind, RelationOpener, SourceAdapter,
