@@ -81,6 +81,32 @@ impl ElasticContextTarget {
         format!("{}://{}", self.reference, self.table().unwrap_or(""))
     }
 
+    fn saved_view_filename(&self) -> String {
+        let parts = [self.reference(), "://", self.table().unwrap_or("")];
+        let is_literal = |byte: u8| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+        };
+        let capacity = parts
+            .iter()
+            .flat_map(|part| part.bytes())
+            .map(|byte| if is_literal(byte) { 1 } else { 3 })
+            .sum();
+        let mut filename = String::with_capacity(capacity);
+        // Escape the marker itself and use lowercase ASCII only: identities
+        // remain distinct even on case-folding or Unicode-normalizing filesystems.
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in parts.iter().flat_map(|part| part.bytes()) {
+            if is_literal(byte) {
+                filename.push(char::from(byte));
+            } else {
+                filename.push('_');
+                filename.push(char::from(HEX[usize::from(byte >> 4)]));
+                filename.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+        }
+        filename
+    }
+
     #[cfg(feature = "elasticsearch")]
     pub(crate) fn connection_cache(
         &self,
@@ -206,7 +232,8 @@ impl SourceTarget {
                 .unwrap_or("input")
                 .to_owned(),
             Self::Stdin | Self::StreamingStdin(_) => "-".to_owned(),
-            Self::Url(_) | Self::ElasticContext(_) => {
+            Self::ElasticContext(target) => target.saved_view_filename(),
+            Self::Url(_) => {
                 let identity = self.safe_identity();
                 let mut value = String::with_capacity(identity.len());
                 let mut separator = false;
@@ -536,6 +563,35 @@ mod tests {
             InputSource::from_cli_value(".production.es://"),
             InputSource::from_cli_value(".Production.es://")
         );
+    }
+
+    #[test]
+    fn distinct_context_identities_have_distinct_case_fold_safe_view_filenames() {
+        for (left, right) in [
+            (".production.es://logs-*", ".production.es://logs-?"),
+            (".production.es://logs_a", ".production.es://logs_5fa"),
+            (".production+east.es://", ".production east.es://"),
+            (".productionα.es://", ".productionβ.es://"),
+            (".Production.es://", ".production.es://"),
+        ] {
+            let left = InputSource::from_cli_value(left);
+            let right = InputSource::from_cli_value(right);
+            let left_filename = left.saved_view_filename();
+            let right_filename = right.saved_view_filename();
+            assert_ne!(
+                left_filename.to_ascii_lowercase(),
+                right_filename.to_ascii_lowercase(),
+                "distinct context identities share a generated view filename"
+            );
+            for filename in [left_filename, right_filename] {
+                assert!(
+                    filename
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'.' | b'-' | b'_'))
+                );
+            }
+        }
     }
 
     #[test]

@@ -908,6 +908,75 @@ mod elasticrc_contexts {
 
     #[cfg(feature = "saved-views")]
     #[test]
+    fn saving_distinct_context_patterns_does_not_overwrite_another_view() {
+        let _guard = PTY_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixture = Fixture::new();
+        let server = Server::start(vec![
+            Response::ok(MAPPING),
+            Response::ok(FIELD_CAPS),
+            Response::ok(ROWS),
+            Response::ok(MAPPING),
+            Response::ok(FIELD_CAPS),
+            Response::ok(ROWS),
+        ]);
+        fixture.write(
+            "production",
+            json!({"production": service(server.endpoint(), None)}),
+        );
+        let views = fixture.xdg.join("tview/views");
+        // Discover both sources before saving: a loaded wildcard-matched view
+        // intentionally saves back to its selected file, not a generated path.
+        let terminals = ["logs-*", "logs-?"].map(|suffix| {
+            let terminal = Terminal::start(&command(
+                &fixture,
+                &format!("'.production.es://{suffix}'"),
+                None,
+            ));
+            terminal.wait_for("context result", || terminal.contains("context-row"));
+            terminal
+        });
+        let mut first_saved = None;
+        for (suffix, mut terminal) in ["logs-*", "logs-?"].into_iter().zip(terminals) {
+            let identity = format!(".production.elasticsearch://{suffix}");
+            terminal.save();
+            terminal.wait_for("separately saved canonical identity", || {
+                std::fs::read_dir(&views).is_ok_and(|entries| {
+                    entries.filter_map(Result::ok).any(|entry| {
+                        std::fs::read_to_string(entry.path())
+                            .ok()
+                            .and_then(|yaml| yaml_serde::from_str::<yaml_serde::Value>(&yaml).ok())
+                            .is_some_and(|document| {
+                                document["filenames"][0].as_str() == Some(identity.as_str())
+                                    && document["source"]["table"].as_str() == Some(suffix)
+                            })
+                    })
+                })
+            });
+            terminal.close_modal("Save");
+            terminal.send(b"q");
+            success(&terminal.finish());
+            if first_saved.is_none() {
+                first_saved = Some(saved_yaml(&fixture));
+            }
+        }
+        let (first_path, first_yaml) = first_saved.unwrap();
+        assert_eq!(std::fs::read_to_string(&first_path).unwrap(), first_yaml);
+        let second_path = std::fs::read_dir(&views)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                let yaml = std::fs::read_to_string(path).unwrap();
+                let document: yaml_serde::Value = yaml_serde::from_str(&yaml).unwrap();
+                document["filenames"][0].as_str() == Some(".production.elasticsearch://logs-?")
+            })
+            .expect("second context identity has its own saved view");
+        assert_ne!(first_path, second_path);
+    }
+
+    #[cfg(feature = "saved-views")]
+    #[test]
     fn saving_suffix_context_preserves_literal_canonical_identity_and_committed_table() {
         let _guard = PTY_LOCK
             .lock()

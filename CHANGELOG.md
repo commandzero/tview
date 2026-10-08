@@ -15,6 +15,7 @@
 - Colored table output uses the same conditional foreground for formatted cells as the interactive viewer (#13).
 - Failed output preparation retains schema updates already discovered from the source (#13).
 - Elasticsearch format rejects local files and stdin with an endpoint diagnostic before probing files (#16).
+- Keep generated context view filenames distinct for wildcard selectors, punctuation, Unicode, and case-sensitive context names (#16).
 
 ## [0.1.1] - 2026-10-03
 
