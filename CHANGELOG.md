@@ -17,6 +17,7 @@
 - Elasticsearch format rejects local files and stdin with an endpoint diagnostic before probing files (#16).
 - Keep generated context view filenames distinct for wildcard selectors, punctuation, Unicode, and case-sensitive context names (#16).
 - Match full saved context identities literally instead of interpreting context names or table selectors as filename globs (#16).
+- Preserve platform filename case behavior for general saved-view globs and regexes used with context sources (#16).
 
 ## [0.1.1] - 2026-10-03
 

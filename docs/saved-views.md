@@ -43,6 +43,8 @@ is part of the matching identity. A full dot-context entry is literal even when
 its context name or selector contains `*` or `?`: `logs-*` does not match a
 different selector such as `logs-2026`. To intentionally match several source
 identities, use a general glob such as `*.elasticsearch://logs-*` or a regex.
+Exact context identities are case-sensitive; general globs and regexes retain
+the platform's filename case behavior.
 Matching does not resolve the endpoint or run credential resolvers.
 
 Generated filenames use a filesystem-safe form of that identity. Keep the

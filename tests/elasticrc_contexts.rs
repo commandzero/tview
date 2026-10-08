@@ -627,6 +627,51 @@ mod enabled {
         }
     }
 
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn general_context_globs_and_regexes_follow_platform_case_behavior() {
+        for (pattern, suffix) in [
+            ("*production.elasticsearch://logs-*", "logs-a"),
+            (r"^\.production\.elasticsearch://metrics-.*$", "metrics-a"),
+        ] {
+            let fixture = Fixture::new();
+            let server = Server::start(
+                (0..2)
+                    .flat_map(|_| {
+                        [
+                            Response::ok(MAPPING),
+                            Response::ok(FIELD_CAPS),
+                            Response::ok(ROWS),
+                        ]
+                    })
+                    .collect(),
+            );
+            fixture.write(
+                "production",
+                json!({
+                    "production": service(server.endpoint(), None),
+                    "Production": service(server.endpoint(), None),
+                }),
+            );
+            fixture.view(
+                "general-pattern",
+                &format!("name: general-pattern\nfilenames: ['{pattern}']\nsource: {{}}\nview:\n  columns:\n    message: {{label: GENERAL_PATTERN}}\n"),
+            );
+            for context in ["production", "Production"] {
+                let output = fixture.run(&[&format!(".{context}.es://{suffix}")]);
+                success(&output);
+                let expected = if context == "production"
+                    || cfg!(any(target_os = "macos", target_os = "windows"))
+                {
+                    b"GENERAL_PATTERN\ncontext-row\n".as_slice()
+                } else {
+                    b"message\ncontext-row\n".as_slice()
+                };
+                assert_eq!(output.stdout, expected, "{pattern} against {context}");
+            }
+        }
+    }
+
     #[test]
     fn empty_suffix_without_selection_reports_batch_requirement_after_discovery() {
         let fixture = Fixture::new();

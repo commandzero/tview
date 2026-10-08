@@ -534,7 +534,7 @@ pub fn select_saved_view<'a>(
     views: &'a [SavedViewFile],
     selection: SavedViewSelection<'_>,
 ) -> Option<SelectedSavedView<'a>> {
-    let (identity, case_sensitive) = match selection {
+    let (identity, exact_case_sensitive) = match selection {
         SavedViewSelection::Force { name } => {
             let normalized = normalize_view_name(name);
             return views
@@ -550,7 +550,9 @@ pub fn select_saved_view<'a>(
     };
     let mut matches = views
         .iter()
-        .filter_map(|view| best_match_rank(view, identity, case_sensitive).map(|rank| (rank, view)))
+        .filter_map(|view| {
+            best_match_rank(view, identity, exact_case_sensitive).map(|rank| (rank, view))
+        })
         .collect::<Vec<_>>();
     matches.sort_by(|(left_rank, left), (right_rank, right)| {
         left_rank
@@ -877,23 +879,23 @@ fn classify_filename_pattern(raw: &str) -> FilenamePatternKind {
 fn best_match_rank(
     view: &SavedViewFile,
     identity: &str,
-    case_sensitive: bool,
+    exact_case_sensitive: bool,
 ) -> Option<MatchRank> {
     view.view
         .filenames
         .iter()
-        .filter_map(|pattern| match_filename_pattern(pattern, identity, case_sensitive))
+        .filter_map(|pattern| match_filename_pattern(pattern, identity, exact_case_sensitive))
         .min()
 }
 
 fn match_filename_pattern(
     pattern: &FilenamePattern,
     identity: &str,
-    case_sensitive: bool,
+    exact_case_sensitive: bool,
 ) -> Option<MatchRank> {
     match pattern.kind {
         FilenamePatternKind::Exact => {
-            let equal = if case_sensitive {
+            let equal = if exact_case_sensitive {
                 pattern.raw == identity
             } else {
                 platform_eq(&pattern.raw, identity)
@@ -901,15 +903,12 @@ fn match_filename_pattern(
             equal.then_some(MatchRank::Exact)
         }
         FilenamePatternKind::Glob => {
-            glob_matches(&pattern.raw, identity, case_sensitive).then_some(MatchRank::Glob)
+            glob_matches(&pattern.raw, identity).then_some(MatchRank::Glob)
         }
         FilenamePatternKind::Regex => {
-            let pattern = if !case_sensitive && platform_case_insensitive() {
-                format!("(?i:{})", pattern.raw)
-            } else {
-                pattern.raw.clone()
-            };
-            Regex::new(&pattern)
+            let case_insensitive =
+                platform_case_insensitive().then(|| format!("(?i:{})", pattern.raw));
+            Regex::new(case_insensitive.as_deref().unwrap_or(&pattern.raw))
                 .ok()
                 .is_some_and(|regex| regex.is_match(identity))
                 .then_some(MatchRank::Regex)
@@ -917,12 +916,8 @@ fn match_filename_pattern(
     }
 }
 
-fn glob_matches(pattern: &str, value: &str, case_sensitive: bool) -> bool {
-    let regex_pattern = if case_sensitive {
-        glob_to_regex_base(pattern)
-    } else {
-        glob_to_regex(pattern)
-    };
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let regex_pattern = glob_to_regex(pattern);
     Regex::new(&regex_pattern)
         .ok()
         .is_some_and(|regex| regex.is_match(value))
@@ -2475,39 +2470,6 @@ view:
         .expect("selected");
 
         assert_eq!(selected.view.canonical_name, "exact");
-    }
-
-    #[test]
-    fn intentional_source_globs_and_regexes_keep_pattern_matching() {
-        let root = tempfile::tempdir().expect("config root");
-        let views = root.path().join("tview/views");
-        std::fs::create_dir_all(&views).expect("views dir");
-        for (name, pattern) in [
-            ("glob", "*.elasticsearch://logs-*"),
-            ("regex", r"^\.Production\.elasticsearch://metrics-[a-z]+$"),
-        ] {
-            std::fs::write(
-                views.join(format!("{name}.yml")),
-                format!("name: {name}\nfilenames: ['{pattern}']\nsource: {{}}\nview: {{}}\n"),
-            )
-            .expect("pattern view");
-        }
-        let discovered = discover_saved_views(Some(root.path()));
-        for (identity, expected) in [
-            (".production.elasticsearch://logs-2026", Some("glob")),
-            (".Production.elasticsearch://metrics-a", Some("regex")),
-            (".production.elasticsearch://metrics-a", None),
-        ] {
-            let selected = select_saved_view(
-                &discovered.views,
-                SavedViewSelection::AutoSource { identity },
-            );
-            assert_eq!(
-                selected.map(|selected| selected.view.canonical_name.as_str()),
-                expected,
-                "{identity}"
-            );
-        }
     }
 
     #[test]
