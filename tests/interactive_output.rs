@@ -926,20 +926,15 @@ mod elasticrc_contexts {
             json!({"production": service(server.endpoint(), None)}),
         );
         let views = fixture.xdg.join("tview/views");
-        // Discover both sources before saving: a loaded wildcard-matched view
-        // intentionally saves back to its selected file, not a generated path.
-        let terminals = ["logs-*", "logs-?"].map(|suffix| {
-            let terminal = Terminal::start(&command(
+        let mut first_saved = None;
+        for suffix in ["logs-*", "logs-?"] {
+            let identity = format!(".production.elasticsearch://{suffix}");
+            let mut terminal = Terminal::start(&command(
                 &fixture,
                 &format!("'.production.es://{suffix}'"),
                 None,
             ));
             terminal.wait_for("context result", || terminal.contains("context-row"));
-            terminal
-        });
-        let mut first_saved = None;
-        for (suffix, mut terminal) in ["logs-*", "logs-?"].into_iter().zip(terminals) {
-            let identity = format!(".production.elasticsearch://{suffix}");
             terminal.save();
             terminal.wait_for("separately saved canonical identity", || {
                 std::fs::read_dir(&views).is_ok_and(|entries| {

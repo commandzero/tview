@@ -39,8 +39,11 @@ the generated YAML filename. `.production.es://logs-*` and
 `.production.elasticsearch://logs-*`. The rightmost segment selects the
 service; preceding segments keep the exact context name, so
 `.production.us-west.es://` selects `production.us-west`. The literal suffix
-is part of the matching identity. Matching does not resolve the endpoint or
-run credential resolvers.
+is part of the matching identity. A full dot-context entry is literal even when
+its context name or selector contains `*` or `?`: `logs-*` does not match a
+different selector such as `logs-2026`. To intentionally match several source
+identities, use a general glob such as `*.elasticsearch://logs-*` or a regex.
+Matching does not resolve the endpoint or run credential resolvers.
 
 Generated filenames use a filesystem-safe form of that identity. Keep the
 full canonical reference in `filenames`, rather than copying the safe filename:

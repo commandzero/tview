@@ -587,6 +587,46 @@ mod enabled {
         }
     }
 
+    #[cfg(feature = "saved-views")]
+    #[test]
+    fn literal_context_patterns_do_not_apply_to_different_names_or_selectors() {
+        let fixture = Fixture::new();
+        let server = Server::start(
+            (0..4)
+                .flat_map(|_| {
+                    [
+                        Response::ok(MAPPING),
+                        Response::ok(FIELD_CAPS),
+                        Response::ok(ROWS),
+                    ]
+                })
+                .collect(),
+        );
+        fixture.write(
+            "production*",
+            json!({
+                "production*": service(server.endpoint(), None),
+                "production": service(server.endpoint(), None),
+            }),
+        );
+        fixture.view(
+            "literal-pattern",
+            "name: literal-pattern\nfilenames: ['.production*.elasticsearch://logs-*']\nsource: {}\nview:\n  columns:\n    message: {label: EXACT_PATTERN}\n",
+        );
+        let exact = fixture.run(&[".production*.es://logs-*"]);
+        success(&exact);
+        assert_eq!(exact.stdout, b"EXACT_PATTERN\ncontext-row\n");
+        for source in [
+            ".production*.es://logs-?",
+            ".production*.es://logs-2026",
+            ".production.es://logs-*",
+        ] {
+            let output = fixture.run(&[source]);
+            success(&output);
+            assert_eq!(output.stdout, b"message\ncontext-row\n", "{source}");
+        }
+    }
+
     #[test]
     fn empty_suffix_without_selection_reports_batch_requirement_after_discovery() {
         let fixture = Fixture::new();

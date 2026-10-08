@@ -861,7 +861,11 @@ fn validate_filename_pattern(
 }
 
 fn classify_filename_pattern(raw: &str) -> FilenamePatternKind {
-    if raw.starts_with('^') || raw.ends_with('$') {
+    if raw.starts_with('.') && raw.contains("://") {
+        // A context's name and table selector are literal identity components,
+        // even when they contain characters used by filename pattern syntax.
+        FilenamePatternKind::Exact
+    } else if raw.starts_with('^') || raw.ends_with('$') {
         FilenamePatternKind::Regex
     } else if raw.contains('*') || raw.contains('?') || raw.contains('[') {
         FilenamePatternKind::Glob
@@ -2474,56 +2478,36 @@ view:
     }
 
     #[test]
-    fn textual_source_matching_keeps_the_complete_case_sensitive_identity() {
+    fn intentional_source_globs_and_regexes_keep_pattern_matching() {
         let root = tempfile::tempdir().expect("config root");
         let views = root.path().join("tview/views");
         std::fs::create_dir_all(&views).expect("views dir");
-        std::fs::write(
-            views.join("context.yml"),
-            "name: context\nfilenames: ['.Production.elasticsearch://logs-*']\nsource:\n  query: FROM logs-*\nview: {}\n",
-        )
-        .expect("context view");
-        let filename = Path::new("production_elasticsearch_logs");
-        let identity = ".Production.elasticsearch://logs-2026";
-        let SavedViewInvocation::Enabled {
-            selected: Some(selected),
-            target_path,
-            ..
-        } = prepare_saved_view(
-            Some(SavedViewSelection::AutoSource { identity }),
-            filename,
-            Some(root.path()),
-        )
-        .expect("source selection")
-        else {
-            panic!("full identity must select the context view");
-        };
-        assert_eq!(selected.canonical_name, "context");
-        assert_eq!(selected.view.source.query.as_deref(), Some("FROM logs-*"));
-        assert_eq!(
-            target_path,
-            Some(views.join("production_elasticsearch_logs.yml"))
-        );
-        let discovered = discover_saved_views(Some(root.path()));
-        for identity in [
-            ".production.elasticsearch://logs-2026",
-            ".Production.extra.elasticsearch://logs-2026",
-            ".elasticsearch://logs-2026",
-            "logs-2026",
+        for (name, pattern) in [
+            ("glob", "*.elasticsearch://logs-*"),
+            ("regex", r"^\.Production\.elasticsearch://metrics-[a-z]+$"),
         ] {
-            assert!(select_saved_view(
+            std::fs::write(
+                views.join(format!("{name}.yml")),
+                format!("name: {name}\nfilenames: ['{pattern}']\nsource: {{}}\nview: {{}}\n"),
+            )
+            .expect("pattern view");
+        }
+        let discovered = discover_saved_views(Some(root.path()));
+        for (identity, expected) in [
+            (".production.elasticsearch://logs-2026", Some("glob")),
+            (".Production.elasticsearch://metrics-a", Some("regex")),
+            (".production.elasticsearch://metrics-a", None),
+        ] {
+            let selected = select_saved_view(
                 &discovered.views,
                 SavedViewSelection::AutoSource { identity },
-            )
-            .is_none());
+            );
+            assert_eq!(
+                selected.map(|selected| selected.view.canonical_name.as_str()),
+                expected,
+                "{identity}"
+            );
         }
-        assert!(select_saved_view(
-            &discovered.views,
-            SavedViewSelection::Auto {
-                input_path: Path::new(identity),
-            },
-        )
-        .is_none());
     }
 
     #[test]
