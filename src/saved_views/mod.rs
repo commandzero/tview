@@ -147,8 +147,16 @@ pub struct ResolvedColumnView {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedViewSelection<'a> {
-    Auto { input_path: &'a Path },
-    Force { name: &'a str },
+    Auto {
+        input_path: &'a Path,
+    },
+    /// Match the complete non-secret source identity, not a filesystem basename.
+    AutoSource {
+        identity: &'a str,
+    },
+    Force {
+        name: &'a str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,47 +534,46 @@ pub fn select_saved_view<'a>(
     views: &'a [SavedViewFile],
     selection: SavedViewSelection<'_>,
 ) -> Option<SelectedSavedView<'a>> {
-    match selection {
+    let (identity, case_sensitive) = match selection {
         SavedViewSelection::Force { name } => {
             let normalized = normalize_view_name(name);
-            views
+            return views
                 .iter()
                 .find(|view| platform_eq(&view.canonical_name, &normalized))
                 .map(|view| SelectedSavedView {
                     view,
                     warnings: Vec::new(),
-                })
+                });
         }
-        SavedViewSelection::Auto { input_path } => {
-            let basename = input_path.file_name()?.to_str()?;
-            let mut matches = views
-                .iter()
-                .filter_map(|view| best_match_rank(view, basename).map(|rank| (rank, view)))
-                .collect::<Vec<_>>();
-            matches.sort_by(|(left_rank, left), (right_rank, right)| {
-                left_rank
-                    .cmp(right_rank)
-                    .then_with(|| left.path.cmp(&right.path))
-            });
-            let (rank, view) = matches.first()?;
-            let ambiguous = matches
-                .iter()
-                .skip(1)
-                .any(|(other_rank, _)| other_rank == rank);
-            let mut warnings = Vec::new();
-            if ambiguous {
-                warnings.push(warning(
-                    basename,
-                    format!(
-                        "multiple saved views matched '{}'; using {}",
-                        basename,
-                        view.path.display()
-                    ),
-                ));
-            }
-            Some(SelectedSavedView { view, warnings })
-        }
+        SavedViewSelection::Auto { input_path } => (input_path.file_name()?.to_str()?, false),
+        SavedViewSelection::AutoSource { identity } => (identity, true),
+    };
+    let mut matches = views
+        .iter()
+        .filter_map(|view| best_match_rank(view, identity, case_sensitive).map(|rank| (rank, view)))
+        .collect::<Vec<_>>();
+    matches.sort_by(|(left_rank, left), (right_rank, right)| {
+        left_rank
+            .cmp(right_rank)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let (rank, view) = matches.first()?;
+    let ambiguous = matches
+        .iter()
+        .skip(1)
+        .any(|(other_rank, _)| other_rank == rank);
+    let mut warnings = Vec::new();
+    if ambiguous {
+        warnings.push(warning(
+            identity,
+            format!(
+                "multiple saved views matched '{}'; using {}",
+                identity,
+                view.path.display()
+            ),
+        ));
     }
+    Some(SelectedSavedView { view, warnings })
 }
 /// Discover and select once, retaining only the selected validated document.
 pub fn prepare_saved_view(
@@ -579,7 +586,13 @@ pub fn prepare_saved_view(
     };
     let target_path = saved_view_dir(config_root).and_then(|directory| {
         let basename = input_path.file_name()?.to_str()?;
-        let stem = basename.rsplit_once('.').map_or(basename, |(stem, _)| stem);
+        // A textual source's safe filename has no filesystem extension to strip.
+        let stem = match &selection {
+            SavedViewSelection::AutoSource { .. } => basename,
+            SavedViewSelection::Auto { .. } | SavedViewSelection::Force { .. } => {
+                basename.rsplit_once('.').map_or(basename, |(stem, _)| stem)
+            }
+        };
         Some(directory.join(format!("{stem}.yml")))
     });
     let view_name = target_path
@@ -591,7 +604,7 @@ pub fn prepare_saved_view(
     let mut discovery = discover_saved_views(config_root);
     let forced_name = match &selection {
         SavedViewSelection::Force { name } => Some(*name),
-        SavedViewSelection::Auto { .. } => None,
+        SavedViewSelection::Auto { .. } | SavedViewSelection::AutoSource { .. } => None,
     };
     let selected = select_saved_view(&discovery.views, selection).map(|selected| {
         let index = discovery
@@ -857,38 +870,55 @@ fn classify_filename_pattern(raw: &str) -> FilenamePatternKind {
     }
 }
 
-fn best_match_rank(view: &SavedViewFile, basename: &str) -> Option<MatchRank> {
+fn best_match_rank(
+    view: &SavedViewFile,
+    identity: &str,
+    case_sensitive: bool,
+) -> Option<MatchRank> {
     view.view
         .filenames
         .iter()
-        .filter_map(|pattern| match_filename_pattern(pattern, basename))
+        .filter_map(|pattern| match_filename_pattern(pattern, identity, case_sensitive))
         .min()
 }
 
-fn match_filename_pattern(pattern: &FilenamePattern, basename: &str) -> Option<MatchRank> {
+fn match_filename_pattern(
+    pattern: &FilenamePattern,
+    identity: &str,
+    case_sensitive: bool,
+) -> Option<MatchRank> {
     match pattern.kind {
         FilenamePatternKind::Exact => {
-            platform_eq(&pattern.raw, basename).then_some(MatchRank::Exact)
+            let equal = if case_sensitive {
+                pattern.raw == identity
+            } else {
+                platform_eq(&pattern.raw, identity)
+            };
+            equal.then_some(MatchRank::Exact)
         }
         FilenamePatternKind::Glob => {
-            glob_matches(&pattern.raw, basename).then_some(MatchRank::Glob)
+            glob_matches(&pattern.raw, identity, case_sensitive).then_some(MatchRank::Glob)
         }
         FilenamePatternKind::Regex => {
-            let pattern = if platform_case_insensitive() {
+            let pattern = if !case_sensitive && platform_case_insensitive() {
                 format!("(?i:{})", pattern.raw)
             } else {
                 pattern.raw.clone()
             };
             Regex::new(&pattern)
                 .ok()
-                .is_some_and(|regex| regex.is_match(basename))
+                .is_some_and(|regex| regex.is_match(identity))
                 .then_some(MatchRank::Regex)
         }
     }
 }
 
-fn glob_matches(pattern: &str, value: &str) -> bool {
-    let regex_pattern = glob_to_regex(pattern);
+fn glob_matches(pattern: &str, value: &str, case_sensitive: bool) -> bool {
+    let regex_pattern = if case_sensitive {
+        glob_to_regex_base(pattern)
+    } else {
+        glob_to_regex(pattern)
+    };
     Regex::new(&regex_pattern)
         .ok()
         .is_some_and(|regex| regex.is_match(value))
@@ -2441,6 +2471,59 @@ view:
         .expect("selected");
 
         assert_eq!(selected.view.canonical_name, "exact");
+    }
+
+    #[test]
+    fn textual_source_matching_keeps_the_complete_case_sensitive_identity() {
+        let root = tempfile::tempdir().expect("config root");
+        let views = root.path().join("tview/views");
+        std::fs::create_dir_all(&views).expect("views dir");
+        std::fs::write(
+            views.join("context.yml"),
+            "name: context\nfilenames: ['.Production.elasticsearch://logs-*']\nsource:\n  query: FROM logs-*\nview: {}\n",
+        )
+        .expect("context view");
+        let filename = Path::new("production_elasticsearch_logs");
+        let identity = ".Production.elasticsearch://logs-2026";
+        let SavedViewInvocation::Enabled {
+            selected: Some(selected),
+            target_path,
+            ..
+        } = prepare_saved_view(
+            Some(SavedViewSelection::AutoSource { identity }),
+            filename,
+            Some(root.path()),
+        )
+        .expect("source selection")
+        else {
+            panic!("full identity must select the context view");
+        };
+        assert_eq!(selected.canonical_name, "context");
+        assert_eq!(selected.view.source.query.as_deref(), Some("FROM logs-*"));
+        assert_eq!(
+            target_path,
+            Some(views.join("production_elasticsearch_logs.yml"))
+        );
+        let discovered = discover_saved_views(Some(root.path()));
+        for identity in [
+            ".production.elasticsearch://logs-2026",
+            ".Production.extra.elasticsearch://logs-2026",
+            ".elasticsearch://logs-2026",
+            "logs-2026",
+        ] {
+            assert!(select_saved_view(
+                &discovered.views,
+                SavedViewSelection::AutoSource { identity },
+            )
+            .is_none());
+        }
+        assert!(select_saved_view(
+            &discovered.views,
+            SavedViewSelection::Auto {
+                input_path: Path::new(identity),
+            },
+        )
+        .is_none());
     }
 
     #[test]

@@ -159,6 +159,11 @@ impl FormatResolver {
             return requested;
         }
 
+        #[cfg(feature = "elasticsearch")]
+        if source.elastic_context().is_some() {
+            return InputFormat::Elasticsearch;
+        }
+
         if let InputSource::Path(path) = source {
             if let Some(format) = format_from_extension(path) {
                 return format;
@@ -177,6 +182,30 @@ impl FormatResolver {
 }
 
 pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result<OpenedSource> {
+    if let Some(target) = source.elastic_context() {
+        target.validate()?;
+        #[cfg(not(feature = "elasticsearch"))]
+        {
+            anyhow::bail!("Elastic CLI context sources require a build with Elasticsearch support");
+        }
+        #[cfg(feature = "elasticsearch")]
+        {
+            if !matches!(
+                options.format,
+                InputFormat::Auto | InputFormat::Elasticsearch
+            ) {
+                anyhow::bail!("Elastic CLI context sources require Elasticsearch format");
+            }
+        }
+    }
+    if is_elasticsearch_format(options.format)
+        && !matches!(&source, InputSource::Url(url) if matches!(url.scheme(), "http" | "https"))
+        && source.elastic_context().is_none()
+    {
+        anyhow::bail!(
+            "Elasticsearch input requires an HTTP(S) endpoint or Elastic CLI context target"
+        );
+    }
     let detected = match &source {
         InputSource::Path(path) => {
             let mut sample = Vec::new();
@@ -229,6 +258,18 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
                 )
             }
         }
+        InputSource::ElasticContext(_) => {
+            #[cfg(feature = "elasticsearch")]
+            {
+                InputFormat::Elasticsearch
+            }
+            #[cfg(not(feature = "elasticsearch"))]
+            {
+                anyhow::bail!(
+                    "Elastic CLI context sources require a build with Elasticsearch support"
+                )
+            }
+        }
     };
     // A JSON Pointer is itself an explicit request for structured parsing. If
     // auto-detection cannot identify JSON/NDJSON, prefer JSON so the option is
@@ -256,18 +297,14 @@ pub fn open_source(source: InputSource, options: &OpenOptions) -> anyhow::Result
             anyhow::bail!("JSON starting paths cannot be used with SQLite input");
         }
     }
-    if elasticsearch {
-        if !matches!(&source, InputSource::Url(url) if matches!(url.scheme(), "http" | "https")) {
-            anyhow::bail!("Elasticsearch input requires an HTTP(S) endpoint target");
-        }
-        if options.has_delimited_options()
+    if elasticsearch
+        && (options.has_delimited_options()
             || options.json_path.is_some()
-            || options.object_mode != ObjectMode::Auto
-        {
-            anyhow::bail!(
-                "delimited and structured-file parsing options cannot be used with Elasticsearch input"
-            );
-        }
+            || options.object_mode != ObjectMode::Auto)
+    {
+        anyhow::bail!(
+            "delimited and structured-file parsing options cannot be used with Elasticsearch input"
+        );
     }
     let incompatible_object_mode = options.object_mode != ObjectMode::Auto
         && (matches!(resolved, InputFormat::Delimited | InputFormat::Ndjson)
@@ -533,6 +570,110 @@ mod tests {
             FormatResolver::resolve(InputFormat::Delimited, &source, br#"[{"a":1}]"#),
             InputFormat::Delimited
         );
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    #[test]
+    fn contexts_imply_elasticsearch_before_content_probing() {
+        for value in [
+            ".es://",
+            ".elasticsearch://",
+            ".production.us-west.es://logs-*",
+        ] {
+            let source = InputSource::from_cli_value(value);
+            assert_eq!(
+                FormatResolver::resolve(InputFormat::Auto, &source, br#"[{"a":1}]"#),
+                InputFormat::Elasticsearch
+            );
+        }
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    #[test]
+    fn contexts_reject_incompatible_options_before_connection_resolution() {
+        for options in [
+            OpenOptions {
+                format: InputFormat::Json,
+                ..OpenOptions::default()
+            },
+            OpenOptions {
+                delimited: super::super::ParseOptions {
+                    delimiter: Some(b'|'),
+                    ..super::super::ParseOptions::default()
+                },
+                ..OpenOptions::default()
+            },
+            OpenOptions {
+                json_path: Some("/rows".parse().unwrap()),
+                ..OpenOptions::default()
+            },
+            OpenOptions {
+                object_mode: ObjectMode::Entries,
+                ..OpenOptions::default()
+            },
+        ] {
+            let source = InputSource::from_cli_value(".production.es://logs-*");
+            assert!(open_source(source.clone(), &options).is_err());
+            assert!(source
+                .elastic_context()
+                .unwrap()
+                .connection_cache()
+                .get()
+                .is_none());
+        }
+    }
+
+    #[cfg(feature = "elasticsearch")]
+    #[test]
+    fn invalid_context_suffixes_fail_before_connection_resolution() {
+        for value in [
+            ".production.es://logs/2026",
+            ".es://logs%2F2026",
+            ".es://logs | LIMIT 1",
+        ] {
+            let source = InputSource::from_cli_value(value);
+            assert!(open_source(source.clone(), &OpenOptions::default()).is_err());
+            assert!(source
+                .elastic_context()
+                .unwrap()
+                .connection_cache()
+                .get()
+                .is_none());
+        }
+    }
+
+    #[cfg(not(feature = "elasticsearch"))]
+    #[test]
+    fn contexts_are_unavailable_without_falling_back_to_file_input() {
+        for value in [
+            ".es://",
+            ".production.elasticsearch://logs-*",
+            ".production.us-west.es://",
+        ] {
+            let source = InputSource::from_cli_value(value);
+            assert!(source.as_path().is_none());
+            let error = open_source(source, &OpenOptions::default())
+                .err()
+                .expect("feature-disabled context must fail");
+            assert!(error.downcast_ref::<std::io::Error>().is_none());
+            assert!(error.to_string().contains("Elasticsearch support"));
+        }
+    }
+
+    #[test]
+    fn malformed_reserved_contexts_fail_without_local_file_errors() {
+        for value in [
+            ".://",
+            "..es://",
+            ".production.kibana://",
+            "./.production.es://",
+        ] {
+            let source = InputSource::from_cli_value(value);
+            let error = open_source(source, &OpenOptions::default())
+                .err()
+                .expect("reserved malformed context must fail");
+            assert!(error.downcast_ref::<std::io::Error>().is_none());
+        }
     }
 
     #[test]

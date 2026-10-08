@@ -96,6 +96,53 @@ as success. Other write failures return 1 and may leave partial output. Writes
 are not atomic; termination during serialization can leave truncated JSON or
 JSONL. OS signals retain OS-defined exit status.
 
+## Elastic CLI context sources
+
+With the optional `elasticsearch` feature, `.es://` and `.elasticsearch://`
+select the current Elastic CLI context. `.production.es://` and
+`.production.elasticsearch://` select the exact named context `production`.
+The rightmost segment is the service, so `.production.us-west.es://` selects
+`production.us-west`. Both aliases imply Elasticsearch format and override a
+saved format. An explicit non-Elasticsearch `--format` conflicts. Ordinary
+HTTP(S) endpoints still require explicit or saved Elasticsearch format.
+
+A non-empty literal suffix, such as `.production.es://logs-*`, is the initial
+`--table` selection, not a URL path. It overrides saved table/query settings
+and conflicts with explicit `--table` or `--query` before credential resolvers
+run. An empty suffix preserves CLI and saved selections. Without a selection,
+interactive mode opens the picker; batch mode fails rather than prompting.
+Malformed or unsupported service references fail without falling back to a
+file. Builds without Elasticsearch report that support is unavailable without
+reading context configuration or running resolvers.
+
+Context startup is cancellable in interactive mode. Preparation failures,
+including missing configuration, context, or service and failed resolution,
+leave batch stdout empty and return 1 with a safe stderr diagnostic. Resolved
+endpoints must be HTTP(S) without userinfo. Runtime secrets and raw context
+resolver/server errors and warnings are omitted from diagnostics and query
+provenance; safe operation details and warning counts remain.
+
+Tview reads `ELASTIC_CLI_CONFIG_FILE`, or the first readable home file in this
+order: `.elasticrc`, `.elasticrc.json`, `.elasticrc.yaml`, `.elasticrc.yml`.
+It resolves only the selected Elasticsearch service and never modifies that
+configuration. Only trust configured resolvers you intend to execute:
+selected command/pass resolvers run, unselected resolvers remain inert, and
+Tview does not interpret shell expressions. It does not load `.env` or espipe
+known-host files.
+
+The selected service's API-key, basic, or unauthenticated mode owns
+authentication. Tview's `ELASTIC_API_KEY`, `ELASTIC_USERNAME`, and
+`ELASTIC_PASSWORD` do not override it; a context's explicit environment
+resolver can still read its named variable. `ELASTIC_CA_CERT`, certificate
+validation, and existing timeouts continue to apply.
+
+Discovery, query replacement, and reload reuse the concrete context, endpoint,
+and authentication resolved once for the invocation. They do not reread the
+configuration or rerun resolvers. Restart to observe changed current context
+or credentials. Saving and reload use the last successful source settings;
+pending or failed replacements and latest-failure export behavior remain as
+described above.
+
 ## Writes and compatibility
 
 Tview does not modify source data. Saving a view writes local configuration and

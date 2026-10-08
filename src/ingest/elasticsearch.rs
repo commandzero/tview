@@ -46,36 +46,51 @@ impl SourceAdapter for ElasticsearchAdapter {
     }
 
     fn open(&self, source: InputSource, options: &OpenOptions) -> anyhow::Result<OpenedSource> {
-        let endpoint = match source {
-            InputSource::Url(url) if matches!(url.scheme(), "http" | "https") => url,
-            InputSource::Url(_) => {
-                anyhow::bail!("Elasticsearch input requires an HTTP(S) endpoint target")
+        if options.native_query.is_none() {
+            if let Some(target) = options.table.as_deref() {
+                validate_from_target(target)?;
             }
-            InputSource::Path(_) | InputSource::Stdin | InputSource::StreamingStdin(_) => {
-                anyhow::bail!("Elasticsearch input requires an HTTP(S) endpoint target")
+        }
+        let (client, identity) = match source {
+            InputSource::ElasticContext(target) => {
+                let connection = super::elastic_context::resolve_connection(&target)?;
+                (
+                    connection.client.clone(),
+                    ElasticsearchSourceIdentity {
+                        value: connection.safe_identity.clone(),
+                        context: true,
+                    },
+                )
+            }
+            InputSource::Url(url) if matches!(url.scheme(), "http" | "https") => {
+                let client = Arc::new(build_client(&url)?);
+                let identity = ElasticsearchSourceIdentity {
+                    value: InputSource::Url(url).safe_identity().into(),
+                    context: false,
+                };
+                (client, identity)
+            }
+            InputSource::Url(_)
+            | InputSource::Path(_)
+            | InputSource::Stdin
+            | InputSource::StreamingStdin(_) => {
+                anyhow::bail!(
+                    "Elasticsearch input requires an HTTP(S) endpoint or dot-context target"
+                )
             }
         };
-        let client = Arc::new(build_client(&endpoint)?);
-        let safe_endpoint = InputSource::Url(endpoint).safe_identity();
 
         if let Some(base) = options.native_query.as_deref() {
-            let opened = execute_opened_table(
-                client,
-                safe_endpoint,
-                None,
-                Some(base.to_owned()),
-                None,
-                options,
-            )?;
+            let opened =
+                execute_opened_table(client, identity, None, Some(base.to_owned()), None, options)?;
             return Ok(OpenedSource::implicit(opened));
         }
 
         if let Some(target) = options.table.as_deref() {
-            validate_from_target(target)?;
-            let catalog = fetch_field_catalog(client.clone(), target)?;
+            let catalog = fetch_field_catalog(client.clone(), identity.clone(), target)?;
             let opened = execute_opened_table(
                 client,
-                safe_endpoint,
+                identity,
                 Some(target.to_owned()),
                 None,
                 Some(catalog),
@@ -84,7 +99,7 @@ impl SourceAdapter for ElasticsearchAdapter {
             return Ok(OpenedSource::implicit(opened));
         }
 
-        let targets = discover_targets(client.clone())?;
+        let targets = discover_targets(client.clone(), identity.clone())?;
         let relations = targets
             .iter()
             .map(|target| RelationCatalogEntry {
@@ -105,7 +120,7 @@ impl SourceAdapter for ElasticsearchAdapter {
             None,
             Box::new(ElasticsearchRelationOpener {
                 client,
-                safe_endpoint,
+                identity,
                 options: options.clone(),
             }),
         ))
@@ -114,16 +129,16 @@ impl SourceAdapter for ElasticsearchAdapter {
 
 struct ElasticsearchRelationOpener {
     client: Arc<Elasticsearch>,
-    safe_endpoint: String,
+    identity: ElasticsearchSourceIdentity,
     options: OpenOptions,
 }
 
 impl RelationOpener for ElasticsearchRelationOpener {
     fn open_relation(&mut self, name: &str) -> anyhow::Result<OpenedTable> {
-        let catalog = fetch_field_catalog(self.client.clone(), name)?;
+        let catalog = fetch_field_catalog(self.client.clone(), self.identity.clone(), name)?;
         execute_opened_table(
             self.client.clone(),
-            self.safe_endpoint.clone(),
+            self.identity.clone(),
             Some(name.to_owned()),
             None,
             Some(catalog),
@@ -163,15 +178,62 @@ pub struct ElasticsearchFieldCatalog {
     pub fields: BTreeMap<String, ElasticsearchField>,
 }
 
+#[derive(Clone)]
+struct ElasticsearchSourceIdentity {
+    value: Arc<str>,
+    context: bool,
+}
+
+impl ElasticsearchSourceIdentity {
+    fn failure(&self, operation: &str, error: impl Into<anyhow::Error>) -> anyhow::Error {
+        if self.context {
+            anyhow::anyhow!("{operation} failed for {}", self.value)
+        } else {
+            error.into()
+        }
+    }
+}
+
 fn build_client(endpoint: &url::Url) -> anyhow::Result<Elasticsearch> {
     let settings = transport_settings_from_env()?;
     build_client_with_settings(endpoint, settings, REQUEST_TIMEOUT)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) fn build_context_client(
+    endpoint: &url::Url,
+    auth: elasticrc::Auth,
+) -> anyhow::Result<Elasticsearch> {
+    let credentials = match auth {
+        elasticrc::Auth::ApiKey(api_key) => {
+            Some(Credentials::EncodedApiKey(api_key.expose_secret().clone()))
+        }
+        elasticrc::Auth::Basic { username, password } => Some(Credentials::Basic(
+            username,
+            password.expose_secret().clone(),
+        )),
+        elasticrc::Auth::None => None,
+    };
+    build_client_with_credentials(
+        endpoint,
+        credentials,
+        std::env::var_os("ELASTIC_CA_CERT").map(std::path::PathBuf::from),
+        REQUEST_TIMEOUT,
+    )
+}
+
+#[derive(Clone, PartialEq, Eq)]
 enum ElasticsearchAuth {
     ApiKey(String),
     Basic { username: String, password: String },
+}
+
+impl std::fmt::Debug for ElasticsearchAuth {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiKey(_) => formatter.write_str("ApiKey([REDACTED])"),
+            Self::Basic { .. } => formatter.write_str("Basic([REDACTED])"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -219,34 +281,42 @@ fn build_client_with_settings(
     settings: ElasticsearchTransportSettings,
     timeout: Duration,
 ) -> anyhow::Result<Elasticsearch> {
-    if !endpoint.username().is_empty() || endpoint.password().is_some() {
-        anyhow::bail!(
-            "Elasticsearch endpoint credentials are unsupported; use ELASTIC_API_KEY or ELASTIC_USERNAME/ELASTIC_PASSWORD"
-        );
-    }
+    let credentials = settings.auth.map(|auth| match auth {
+        ElasticsearchAuth::ApiKey(api_key) => Credentials::EncodedApiKey(api_key),
+        ElasticsearchAuth::Basic { username, password } => Credentials::Basic(username, password),
+    });
+    build_client_with_credentials(endpoint, credentials, settings.ca_cert, timeout)
+}
 
+fn build_client_with_credentials(
+    endpoint: &url::Url,
+    credentials: Option<Credentials>,
+    ca_cert: Option<std::path::PathBuf>,
+    timeout: Duration,
+) -> anyhow::Result<Elasticsearch> {
+    if !matches!(endpoint.scheme(), "http" | "https") {
+        anyhow::bail!("Elasticsearch endpoint must use HTTP(S)");
+    }
+    if !endpoint.username().is_empty() || endpoint.password().is_some() {
+        anyhow::bail!("Elasticsearch endpoint credentials are unsupported; configure authentication separately");
+    }
     let pool = SingleNodeConnectionPool::new(endpoint.clone());
     let mut builder = TransportBuilder::new(pool).timeout(timeout);
-    if let Some(auth) = settings.auth {
-        builder = builder.auth(match auth {
-            ElasticsearchAuth::ApiKey(api_key) => Credentials::EncodedApiKey(api_key),
-            ElasticsearchAuth::Basic { username, password } => {
-                Credentials::Basic(username, password)
-            }
-        });
+    if let Some(credentials) = credentials {
+        builder = builder.auth(credentials);
     }
-    if let Some(ca_path) = settings.ca_cert {
-        let bytes = std::fs::read(&ca_path).map_err(|error| {
-            anyhow::anyhow!(
-                "failed to read ELASTIC_CA_CERT '{}': {error}",
-                ca_path.display()
-            )
+    if let Some(ca_path) = ca_cert {
+        let bytes = std::fs::read(ca_path).map_err(|_| {
+            anyhow::anyhow!("failed to read ELASTIC_CA_CERT; check file permissions")
         })?;
         let certificate = Certificate::from_pem(&bytes)
-            .map_err(|error| anyhow::anyhow!("invalid ELASTIC_CA_CERT: {error}"))?;
+            .map_err(|_| anyhow::anyhow!("invalid ELASTIC_CA_CERT; expected a PEM certificate"))?;
         builder = builder.cert_validation(CertificateValidation::Full(certificate));
     }
-    Ok(Elasticsearch::new(builder.build()?))
+    let transport = builder
+        .build()
+        .map_err(|_| anyhow::anyhow!("failed to construct Elasticsearch transport"))?;
+    Ok(Elasticsearch::new(transport))
 }
 
 fn run_async<T, F>(future: F) -> anyhow::Result<T>
@@ -263,7 +333,10 @@ where
     .map_err(|_| anyhow::anyhow!("Elasticsearch worker panicked"))?
 }
 
-fn discover_targets(client: Arc<Elasticsearch>) -> anyhow::Result<Vec<ElasticsearchTarget>> {
+fn discover_targets(
+    client: Arc<Elasticsearch>,
+    identity: ElasticsearchSourceIdentity,
+) -> anyhow::Result<Vec<ElasticsearchTarget>> {
     run_async(async move {
         let names = ["*"];
         let expand = [ExpandWildcards::Open];
@@ -274,8 +347,9 @@ fn discover_targets(client: Arc<Elasticsearch>) -> anyhow::Result<Vec<Elasticsea
             .ignore_unavailable(true)
             .request_timeout(REQUEST_TIMEOUT)
             .send()
-            .await?;
-        let value = response_json(response, "resolve Elasticsearch targets").await?;
+            .await
+            .map_err(|error| identity.failure("resolve Elasticsearch targets", error))?;
+        let value = response_json(response, "resolve Elasticsearch targets", &identity).await?;
         parse_resolved_targets(&value)
     })
 }
@@ -344,6 +418,7 @@ fn parse_resolved_targets(value: &Value) -> anyhow::Result<Vec<ElasticsearchTarg
 
 fn fetch_field_catalog(
     client: Arc<Elasticsearch>,
+    identity: ElasticsearchSourceIdentity,
     target: &str,
 ) -> anyhow::Result<ElasticsearchFieldCatalog> {
     let target = target.to_owned();
@@ -356,17 +431,24 @@ fn fetch_field_catalog(
             .expand_wildcards(&expand)
             .request_timeout(REQUEST_TIMEOUT)
             .send()
-            .await?;
-        let mappings = response_json(mappings_response, "read Elasticsearch mappings").await?;
+            .await
+            .map_err(|error| identity.failure("read Elasticsearch mappings", error))?;
+        let mappings =
+            response_json(mappings_response, "read Elasticsearch mappings", &identity).await?;
         let field_caps_response = client
             .field_caps(FieldCapsParts::Index(&indices))
             .fields(&["*"])
             .expand_wildcards(&expand)
             .request_timeout(REQUEST_TIMEOUT)
             .send()
-            .await?;
-        let field_caps =
-            response_json(field_caps_response, "read Elasticsearch field capabilities").await?;
+            .await
+            .map_err(|error| identity.failure("read Elasticsearch field capabilities", error))?;
+        let field_caps = response_json(
+            field_caps_response,
+            "read Elasticsearch field capabilities",
+            &identity,
+        )
+        .await?;
         Ok(parse_field_catalog(&mappings, &field_caps))
     })
 }
@@ -495,9 +577,16 @@ fn flatten_mapping_properties(
 async fn response_json(
     response: elasticsearch::http::response::Response,
     operation: &str,
+    identity: &ElasticsearchSourceIdentity,
 ) -> anyhow::Result<Value> {
     let status = response.status_code();
-    let value = response.json::<Value>().await?;
+    if !status.is_success() && identity.context {
+        anyhow::bail!("{operation} failed for {} ({status})", identity.value);
+    }
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|error| identity.failure(operation, error))?;
     if !status.is_success() {
         let reason = value
             .pointer("/error/reason")
@@ -511,7 +600,7 @@ async fn response_json(
 
 fn execute_opened_table(
     client: Arc<Elasticsearch>,
-    safe_endpoint: String,
+    identity: ElasticsearchSourceIdentity,
     target: Option<String>,
     native_query: Option<String>,
     field_catalog: Option<ElasticsearchFieldCatalog>,
@@ -539,7 +628,7 @@ fn execute_opened_table(
         .into();
     let result = execute_esql(
         client.clone(),
-        safe_endpoint.clone(),
+        identity.clone(),
         target.clone(),
         request,
         &options.source_filters,
@@ -552,7 +641,7 @@ fn execute_opened_table(
             inner: result.table,
             definition: result.definition,
             client,
-            safe_endpoint,
+            identity,
             target,
             field_catalog: source_fields,
             active_query: result.query,
@@ -580,7 +669,7 @@ struct ExecutedEsql {
 
 fn execute_esql(
     client: Arc<Elasticsearch>,
-    safe_endpoint: String,
+    identity: ElasticsearchSourceIdentity,
     target: Option<String>,
     request: SourceQuery,
     filters: &[SourceFilterRequest],
@@ -588,7 +677,7 @@ fn execute_esql(
 ) -> anyhow::Result<ExecutedEsql> {
     run_async(execute_esql_async(
         client,
-        safe_endpoint,
+        identity,
         target,
         request,
         filters.to_vec(),
@@ -598,7 +687,7 @@ fn execute_esql(
 
 async fn execute_esql_async(
     client: Arc<Elasticsearch>,
-    _safe_endpoint: String,
+    identity: ElasticsearchSourceIdentity,
     target: Option<String>,
     mut request: SourceQuery,
     filters: Vec<SourceFilterRequest>,
@@ -618,10 +707,29 @@ async fn execute_esql_async(
         .request_timeout(REQUEST_TIMEOUT)
         .body(esql_request_body(execution_query, params))
         .send()
-        .await?;
-    let response = response_json(response, "execute ES|QL").await?;
-    let parsed: EsqlResponse = serde_json::from_value(response)
-        .map_err(|error| anyhow::anyhow!("invalid ES|QL response: {error}"))?;
+        .await
+        .map_err(|error| identity.failure("execute ES|QL", error))?;
+    let response = response_json(response, "execute ES|QL", &identity).await?;
+    let parsed: EsqlResponse = serde_json::from_value(response).map_err(|error| {
+        if identity.context {
+            identity.failure("decode ES|QL response", error)
+        } else {
+            anyhow::anyhow!("invalid ES|QL response: {error}")
+        }
+    })?;
+    let warnings = if identity.context {
+        let count = parsed.warnings.len();
+        drop(parsed.warnings);
+        if count == 0 {
+            Vec::new()
+        } else {
+            vec![format!(
+                "Elasticsearch reported {count} warning(s); context warning details are redacted"
+            )]
+        }
+    } else {
+        parsed.warnings
+    };
     let generation = SourceGeneration::new();
     request.generation = generation;
     let relation_name = target.unwrap_or_else(|| "__tview_esql_query".to_owned());
@@ -667,7 +775,7 @@ async fn execute_esql_async(
         query: request,
         extent,
         is_partial: parsed.is_partial,
-        warnings: parsed.warnings,
+        warnings,
         provenance: compiled.provenance,
         identities,
     })
@@ -929,7 +1037,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn validate_from_target(target: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_from_target(target: &str) -> anyhow::Result<()> {
     if target.is_empty()
         || target.chars().any(|ch| {
             !(ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '*' | '?' | ',' | ':' | '@'))
@@ -1000,7 +1108,7 @@ struct ElasticsearchTableStore {
     inner: InMemoryTable,
     definition: TableDefinition,
     client: Arc<Elasticsearch>,
-    safe_endpoint: String,
+    identity: ElasticsearchSourceIdentity,
     target: Option<String>,
     field_catalog: Arc<[SourceFieldMetadata]>,
     active_query: SourceQuery,
@@ -1084,7 +1192,7 @@ impl TableStore for ElasticsearchTableStore {
         query: SourceQuery,
     ) -> anyhow::Result<crate::table::SourceQueryTask> {
         let client = self.client.clone();
-        let safe_endpoint = self.safe_endpoint.clone();
+        let identity = self.identity.clone();
         let target = self.target.clone();
         let field_catalog = self.field_catalog.clone();
         let base = query
@@ -1131,10 +1239,10 @@ impl TableStore for ElasticsearchTableStore {
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(crate::table::SourceQueryTask::Async(Box::pin(async move {
             let replacement_client = client.clone();
-            let replacement_endpoint = safe_endpoint.clone();
+            let replacement_identity = identity.clone();
             let result = execute_esql_async(
                 client,
-                safe_endpoint,
+                identity,
                 target.clone(),
                 SourceQuery {
                     native_query: Some(base),
@@ -1149,7 +1257,7 @@ impl TableStore for ElasticsearchTableStore {
                 inner: result.table,
                 definition: definition.clone(),
                 client: replacement_client,
-                safe_endpoint: replacement_endpoint,
+                identity: replacement_identity,
                 target,
                 field_catalog,
                 active_query: result.query,
@@ -1238,12 +1346,17 @@ mod tests {
     }
 
     fn captured_info_request(settings: ElasticsearchTransportSettings) -> String {
+        captured_client_request(|endpoint| {
+            build_client_with_settings(endpoint, settings, Duration::from_secs(2)).unwrap()
+        })
+    }
+
+    fn captured_client_request(build: impl FnOnce(&url::Url) -> Elasticsearch) -> String {
         let (endpoint, request, worker) = mock_http_server(
             Some(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}"),
             Duration::ZERO,
         );
-        let client =
-            build_client_with_settings(&endpoint, settings, Duration::from_secs(2)).unwrap();
+        let client = build(&endpoint);
         run_async(async move {
             client.info().send().await?;
             Ok(())
@@ -1252,6 +1365,79 @@ mod tests {
         let request = request.recv_timeout(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();
         request
+    }
+
+    #[test]
+    fn context_transport_supports_each_context_authentication_mode() {
+        let api_key = captured_client_request(|endpoint| {
+            build_context_client(endpoint, elasticrc::Auth::api_key("context-key")).unwrap()
+        });
+        assert!(api_key.contains("authorization: ApiKey context-key"));
+
+        let basic = captured_client_request(|endpoint| {
+            build_context_client(endpoint, elasticrc::Auth::basic("elastic", "secret")).unwrap()
+        });
+        assert!(basic.contains("authorization: Basic ZWxhc3RpYzpzZWNyZXQ="));
+
+        let unauthenticated = captured_client_request(|endpoint| {
+            build_context_client(endpoint, elasticrc::Auth::None).unwrap()
+        });
+        assert!(!unauthenticated
+            .to_ascii_lowercase()
+            .contains("authorization:"));
+    }
+
+    #[test]
+    fn transport_authentication_debug_never_prints_credentials() {
+        let sentinel = "transport-secret-sentinel";
+        let api_key = ElasticsearchTransportSettings {
+            auth: Some(ElasticsearchAuth::ApiKey(sentinel.to_owned())),
+            ca_cert: None,
+        };
+        let basic = ElasticsearchTransportSettings {
+            auth: Some(ElasticsearchAuth::Basic {
+                username: sentinel.to_owned(),
+                password: sentinel.to_owned(),
+            }),
+            ca_cert: None,
+        };
+        assert!(!format!("{api_key:?}").contains(sentinel));
+        assert!(!format!("{basic:?}").contains(sentinel));
+    }
+
+    #[test]
+    fn context_request_failures_hide_server_output_and_endpoint_secrets() {
+        let (endpoint, request, worker) = mock_http_server(
+            Some(b"HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"error\":{\"reason\":\"transport-secret-sentinel\"}}"),
+            Duration::ZERO,
+        );
+        let client = build_context_client(&endpoint, elasticrc::Auth::None).unwrap();
+        let identity = ElasticsearchSourceIdentity {
+            value: ".production.elasticsearch://".into(),
+            context: true,
+        };
+        let error = run_async(async move {
+            let response = client.info().send().await?;
+            response_json(response, "read Elasticsearch info", &identity).await
+        })
+        .unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains(".production.elasticsearch://"));
+        assert!(!rendered.contains("transport-secret-sentinel"));
+        assert!(error.source().is_none());
+        request.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+
+        let identity = ElasticsearchSourceIdentity {
+            value: ".production.elasticsearch://".into(),
+            context: true,
+        };
+        let error = identity.failure(
+            "execute ES|QL",
+            anyhow::anyhow!("https://elastic.example/?key=transport-secret-sentinel"),
+        );
+        assert!(!format!("{error:#}").contains("transport-secret-sentinel"));
+        assert!(error.source().is_none());
     }
 
     #[test]

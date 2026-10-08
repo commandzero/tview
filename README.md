@@ -26,6 +26,10 @@ support, install with `cargo install tview --features elasticsearch`. See
 [installation](docs/installation.md) for supported platforms and build options, and
 [migration](docs/migration.md) if you used Tabview.
 
+With Elasticsearch enabled, `tview '.production.es://logs-*'` reuses an Elastic
+CLI context. See [Elasticsearch sources](docs/elasticsearch.md#elastic-cli-contexts)
+for current-context aliases, configuration, and authentication.
+
 ## Get started
 
 ```sh

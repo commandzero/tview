@@ -92,7 +92,8 @@ and scan costs.
 
 `--format auto|delimited|json|ndjson|toon` defaults to `auto`. Builds with the
 `sqlite` or `elasticsearch` feature also accept the corresponding format. An
-explicit format wins. For structured stdin, set `--format json`, `ndjson`, or
+explicit format wins except that dot-context sources reject incompatible
+formats. For structured stdin, set `--format json`, `ndjson`, or
 `toon`: under `auto`, batch stdin is delimited unless a structured option or
 saved format selects structured input.
 
@@ -101,9 +102,20 @@ override it. Tview does not guess TOON from extensionless text. Extensions take
 precedence over a bounded probe; the SQLite file signature is recognized before
 text decoding. Delimited-only options imply delimited input under `auto` except
 for SQLite files, and conflict with SQLite or an explicitly structured format.
-An unambiguous URL scheme can select a source. `file://` resolves to a local
-path; `libsql://` is reserved and unsupported. HTTP and HTTPS require
-`--format elasticsearch`; Tview does not fetch URLs to detect a format.
+`file://` resolves to a local path; `libsql://` is reserved and unsupported.
+HTTP and HTTPS require explicit or saved Elasticsearch format; Tview does not
+fetch URLs to detect a format.
+
+With the optional `elasticsearch` feature, `.es://` and `.elasticsearch://`
+select the current Elastic CLI context, and `.production.es://` or
+`.production.elasticsearch://` select a named context. These sources imply
+Elasticsearch format before URL or file handling, overriding a saved format.
+The rightmost service segment leaves preceding dots in the context name, as
+in `.production.us-west.es://`. A literal suffix such as
+`.production.es://logs-*` selects a table or index pattern. Dot-prefixed paths
+without `://`, such as `.es` or `./.production.es`, remain local files.
+See [Elasticsearch sources](elasticsearch.md#elastic-cli-contexts) for selection
+conflicts, configuration discovery, authentication, and resolver trust.
 
 ## Table previews
 

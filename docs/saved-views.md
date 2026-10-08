@@ -31,6 +31,36 @@ tview data.csv --no-view
 Tview selects one view for the invocation. A missing forced view fails before
 opening the source. Start another invocation to pick up changes to the YAML.
 
+### Elastic CLI context matching
+
+Context sources match their full canonical reference, not an input basename or
+the generated YAML filename. `.production.es://logs-*` and
+`.production.elasticsearch://logs-*` both use
+`.production.elasticsearch://logs-*`. The rightmost segment selects the
+service; preceding segments keep the exact context name, so
+`.production.us-west.es://` selects `production.us-west`. The literal suffix
+is part of the matching identity. Matching does not resolve the endpoint or
+run credential resolvers.
+
+Generated filenames use a filesystem-safe form of that identity. Keep the
+full canonical reference in `filenames`, rather than copying the safe filename:
+
+```yaml
+name: production-logs
+filenames: [".production.elasticsearch://logs-*"]
+source:
+  format: elasticsearch
+  table: "logs-*"
+  limit: 1000
+view: {}
+```
+
+This uses existing view fields. YAML contains no resolved endpoint,
+authentication, or resolver values. A current-context reference is saved as
+`.elasticsearch://`, not the concrete context name. A fresh invocation follows
+the then-current context; reload in the original invocation stays on its
+resolved connection. Named references remain named.
+
 ## Column settings
 
 Set only the properties you want to override. This view gives a column a type,
@@ -93,6 +123,19 @@ ES|QL. A file source opened without a finite limit leaves the limit unset.
 Reload reopens that committed source configuration while keeping compatible
 live view settings; it does not reread the saved YAML. Reloading stdin does
 nothing, and a reload error ends the interactive session.
+
+For context sources, a non-empty positional suffix acts as the initial
+`--table` selection and overrides a saved table or query. It conflicts with
+explicit `--table` or `--query`. An empty suffix preserves normal CLI-over-saved
+selection and interactive discovery. These are startup rules: a later
+successfully committed source-query replacement becomes the configuration
+used for saving and reload, without reapplying the initial suffix. Discovery,
+replacement queries, and reload all reuse the context connection resolved for
+the invocation. Restart Tview to refresh the endpoint or credentials.
+
+Pending and failed replacements still leave the last successful source
+settings intact. The [latest-failure export rule](cli-contract.md#interactive-mode-and-output)
+also remains unchanged.
 
 For files, source filters run on decoded records before the source limit.
 Delimited, JSON, and NDJSON readers stream records; TOON validates the whole
@@ -162,7 +205,8 @@ not profile rows solely for colors.
 
 Press `v` to inspect generated YAML, then `s` in the modal to save it. Tview
 saves to the loaded view file or a file named from the input with only its last
-extension replaced by `.yml`. It asks for `y`/`n` before overwriting a file.
+extension replaced by `.yml`. Context sources instead use a filesystem-safe
+canonical reference name. It asks for `y`/`n` before overwriting a file.
 Saves are atomic and create the views directory if needed.
 
 Use the [view schema](../schemas/view.schema.json) for editor validation and

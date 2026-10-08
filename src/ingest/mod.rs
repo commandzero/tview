@@ -1,7 +1,11 @@
 mod adapter;
 mod delimited;
 #[cfg(feature = "elasticsearch")]
+pub(crate) mod elastic_context;
+#[cfg(feature = "elasticsearch")]
 mod elasticsearch;
+#[cfg(feature = "elasticsearch")]
+pub(crate) use elasticsearch::validate_from_target;
 mod json;
 mod options;
 pub mod source;

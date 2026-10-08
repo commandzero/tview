@@ -36,7 +36,9 @@ follow the [migration guide](migration.md).
 ## Optional features
 
 Saved views, SQLite, and clipboard support are enabled by default.
-Elasticsearch support is opt-in:
+Elasticsearch support, including Elastic CLI `.elasticrc` context sources
+such as `.production.es://logs-*`, requires the optional `elasticsearch`
+feature. It is not enabled in default, minimal, or Homebrew builds:
 
 ```sh
 cargo install tview --features elasticsearch
