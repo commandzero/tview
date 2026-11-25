@@ -100,7 +100,7 @@ pub(crate) fn saved_column(
         type_explicit: column.column_type.is_some(),
         column_type: column
             .column_type
-            .map(super::column_type_metadata)
+            .map(super::binding::column_type_metadata)
             .unwrap_or(if numeric {
                 super::ColumnTypeMetadata::Float
             } else {
@@ -108,7 +108,7 @@ pub(crate) fn saved_column(
             }),
         format: column
             .format
-            .map(super::display_format_metadata)
+            .map(super::binding::display_format_metadata)
             .or_else(|| column.mask.as_ref().map(|_| DisplayFormatMetadata::Mask))
             .unwrap_or(DisplayFormatMetadata::Plain),
         mask: column.mask.as_ref().map(|mask| super::NumberMaskMetadata {

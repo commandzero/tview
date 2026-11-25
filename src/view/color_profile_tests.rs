@@ -1,8 +1,12 @@
-use super::*;
+use super::{TableView, Viewport};
+use crate::ingest::OpenedTable;
+use crate::ops::filter::{FilterKind, FilterMode};
+use crate::ops::sort::{SortDirection, SortMode};
+use crate::table::InMemoryTable;
 use crate::table::{
     CellValue, ColumnDefinition, ColumnId, ColumnSourceIdentity, IndexProgress, LogicalType,
-    RelationMetadata, Row, RowId, ScanDirection, ScanProgress, ScanRequest, SchemaDelta,
-    SchemaState, TypeOrigin,
+    RelationMetadata, Row, RowCount, RowId, RowIndex, ScanDirection, ScanProgress, ScanRequest,
+    SchemaDelta, SchemaState, SourceGeneration, TableDefinition, TableStore, TypeOrigin,
 };
 use ratatui::style::Color;
 use std::sync::{
